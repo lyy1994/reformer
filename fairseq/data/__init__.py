@@ -11,7 +11,6 @@ from .indexed_dataset import IndexedDataset, IndexedInMemoryDataset, IndexedRawT
 from .language_pair_dataset import LanguagePairDataset
 from .monolingual_dataset import MonolingualDataset
 from .token_block_dataset import TokenBlockDataset
-from .decoder_dataset import DecoderDataset
 
 from .iterators import (
     CountingIterator,
@@ -33,5 +32,4 @@ __all__ = [
     'MonolingualDataset',
     'ShardedIterator',
     'TokenBlockDataset',
-    "DecoderDataset",
 ]
