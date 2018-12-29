@@ -182,7 +182,7 @@ class ReformerEncoder(FairseqEncoder):
         self.register_buffer('version', torch.Tensor([2]))
         self.normalize = args.encoder_normalize_before
         if self.normalize:
-           self.layer_norm = LayerNorm(embed_dim)
+            self.layer_norm = LayerNorm(embed_dim)
 
     def forward(self, src_tokens, src_lengths):
         """
@@ -292,7 +292,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         self.max_target_positions = args.max_target_positions
 
         self.embed_tokens = embed_tokens
-        self.embed_scale = math.sqrt(embed_dim) # todo: try with input_embed_dim
+        self.embed_scale = math.sqrt(embed_dim)  # todo: try with input_embed_dim
 
         self.project_in_dim = Linear(input_embed_dim, embed_dim, bias=False,
                                      uniform=False) if embed_dim != input_embed_dim else None
@@ -312,7 +312,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         self.adaptive_softmax = None
 
         self.project_out_dim = Linear(embed_dim, output_embed_dim,
-                              bias=False, uniform=False) if embed_dim != output_embed_dim else None
+                                      bias=False, uniform=False) if embed_dim != output_embed_dim else None
 
         if args.adaptive_softmax_cutoff is not None:
             self.adaptive_softmax = AdaptiveSoftmax(
@@ -326,7 +326,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         self.register_buffer('version', torch.Tensor([2]))
         self.normalize = args.decoder_normalize_before and final_norm
         if self.normalize:
-           self.layer_norm = LayerNorm(embed_dim)
+            self.layer_norm = LayerNorm(embed_dim)
 
     def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None):
         """
@@ -440,7 +440,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             self.layer_norm = None
             self.normalize = False
             state_dict['decoder.version'] = torch.Tensor([1])
-
 
         return state_dict
 
