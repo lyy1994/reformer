@@ -3,7 +3,7 @@ set -e
 
 ######## hardware ########
 # devices
-devices=1
+devices=0
 
 ######## dataset ########
 # language: zh-en or en-zh
@@ -15,17 +15,17 @@ dataset=iwslt14.tokenized.${lang}
 
 ######## parameters ########
 # which model
-model=transformer
+model=reformer
 # which hparams 
 param=${model}"_iwslt_"${s}"_"${t}
 # defualt is 103k. About 10 epochs for 700w CWMT
 max_update=50000
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
-other_hparams=
+other_hparams="--temporal"
 
 ######## required ########
 # tag is the name of your experiments
-tag=transformer
+tag=reformer_past_loss
 
 
 
@@ -42,6 +42,8 @@ else
   echo -e "\033[31m$output_dir exists!\033[0m"
   exit -1
 fi
+# save train.sh
+cp `pwd`/train.sh $output_dir
 
 if [ ! -d "$data_dir/$dataset" ]; then
   # start preprocessing
@@ -68,10 +70,11 @@ $data_dir/$dataset
 --label-smoothing 0.1
 --dropout 0.3
 --max-tokens 4000
+--update-freq 1
 --min-lr 1e-09
 --lr-scheduler inverse_sqrt
 --weight-decay 0.0001
---criterion label_smoothed_cross_entropy
+--criterion temporal_past_next_cross_entropy
 --max-update $max_update
 --warmup-updates 4000
 --warmup-init-lr 1e-07

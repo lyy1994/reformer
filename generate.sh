@@ -2,8 +2,8 @@
 set -e
 
 ######## hardware (default) ########
-# device
-device=-1
+# device (-1 for cpu)
+device=1
 
 ######## dataset (default) ########
 # language: zh-en or en-zh
@@ -20,23 +20,23 @@ data_dir=../data/data-bin
 datatype=test
 
 ######## parameters (default) ########
-batch_size=128
+batch_size=16
 beam_size=5
 lenpen=1
 # if use ensemble, set it
 ensemble=
 # dynamic options, e.g. change some default settings, '--quiet'
-other_options="--quiet --remove-bpe --no-progress-bar"
+other_options="--quiet --remove-bpe"
 
 ######## models (default) ########
 # must exist
-tag=transformer
+tag=lwcm_small_deep_rich_fat_normb_embed
 # used for specific model file
 model_file=checkpoint_best.pt
 
 ######## evaluation (default) ########
 # evaluation or just decoding
-is_eval=1
+is_eval=0
 # now available for multi-bleu.perl only
 eval_tool=../utils/scripts/multi-bleu.perl
 
@@ -86,6 +86,8 @@ ref_file_bpe=${data_dir%%/data-bin*}/${dataset}/${datatype}.${t}
 ref_file=${output_dir}/${datatype}.${t}
 
 
+# save generate.sh
+cp `pwd`/generate.sh $output_dir
 
 if [ -n "$ensemble" ]; then
   # start ensemble
