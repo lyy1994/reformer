@@ -73,7 +73,11 @@ def main(args):
     dummy_batch = task.dataset('train').get_dummy_batch(args.max_tokens, max_positions)
 
     # Build trainer
-    trainer = Trainer(args, task, model, criterion, dummy_batch)
+    if args.temporal:
+        from fairseq.temporal_trainer import TTrainer
+        trainer = TTrainer(args, task, model, criterion, dummy_batch)
+    else:
+        trainer = Trainer(args, task, model, criterion, dummy_batch)
     print('| training on {} GPUs'.format(args.distributed_world_size))
     print('| max tokens per GPU = {} and max sentences per GPU = {}'.format(
         args.max_tokens,
@@ -111,9 +115,6 @@ def main(args):
 
         if epoch_itr.epoch % args.validate_interval == 0:
             valid_losses = validate(args, trainer, task, epoch_itr, valid_subsets)
-            stats = get_training_stats(trainer)
-            content = {'valid_loss_%d' % (i + 1): vl for i, vl in enumerate(valid_losses)}
-            write_tensorboard(args, stats['num_updates'], content, is_training=False)
 
         # only use first validation loss to update the learning rate
         lr = trainer.lr_step(epoch_itr.epoch, valid_losses[0])
@@ -217,8 +218,9 @@ def get_training_stats(trainer):
 
 def validate(args, trainer, task, epoch_itr, subsets):
     """Evaluate the model on the validation set(s) and return the losses."""
+    train_stats = get_training_stats(trainer)
     valid_losses = []
-    for subset in subsets:
+    for i, subset in enumerate(subsets):
         # Initialize data iterator
         itr = task.get_batch_iterator(
             dataset=task.dataset(subset),
@@ -260,6 +262,10 @@ def validate(args, trainer, task, epoch_itr, subsets):
         for k, meter in extra_meters.items():
             stats[k] = meter.avg
         progress.print(stats)
+
+        excluded = ['num_updates', 'best']
+        content = {key + "_" + str(i + 1): value for key, value in stats.items() if key not in excluded}
+        write_tensorboard(args, train_stats['num_updates'], content, is_training=False)
 
         valid_losses.append(stats['valid_loss'])
     return valid_losses
