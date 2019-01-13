@@ -13,13 +13,8 @@ import torch.nn.functional as F
 from fairseq import utils
 
 
-class TemporalMultiheadAttention(nn.Module):
-    """Multi-headed attention that works with additional time axis.
-
-    It produces a series of representations that differs by feeding
-    target input of different lengths. The (each dimension) output
-    representations contain global information from all positions
-    of either source and target.
+class MultiheadAttention2D(nn.Module):
+    """Multi-headed attention with 2D inputs (src x tgt).
     """
 
     def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False):
@@ -64,69 +59,76 @@ class TemporalMultiheadAttention(nn.Module):
         if self.bias_v is not None:
             nn.init.xavier_normal_(self.bias_v)
 
-    def forward(self, query, key, value, key_padding_mask=None, incremental_state=None,
-                need_weights=True, static_kv=False, attn_mask=None):
+    def forward(self, query, key, value, key_padding_mask=None, incremental_state=None, need_weights=True,
+                attn_mask=None, tgt_attn=True):
         """
-        query shape: (tgt) Time x (src + tgt, output) Time x Batch x Channel
-        key/value shape: (tgt) Time x (src + tgt, input) Time x Batch x Channel
-        key_padding_mask shape: Batch x (src + tgt, input) Time
-        attn_mask shape: (tgt) Time x (src + tgt, input) Time
+        To perform decoder self-attention: tgt_attn=True, attn_mask is not None (train).
+        To perform encoder self-attention: tgt_attn=False, key_padding_mask is not None, qkv_same=True.
+        :param query: Output x Source x Batch x Channel
+        :param key: Input x Source x Batch x Channel
+        :param value: the same to key
+        :param key_padding_mask: Batch x Source, required only reduce_tgt=False
+        :param incremental_state:
+        :param need_weights:
+        :param attn_mask: Output x Input, required only reduce_tgt=True
+        :param tgt_attn: default True. Reduce Input dim (decoder self-attention),
+        otherwise reduce Source dim (encoder self-attention).
+        :return:
         """
-
+        # since data_ptr() is used to detect whether q, k, v are the same be
+        # careful with the case that q, k, v have different dims yet sliced
+        # from one tensor
         qkv_same = query.data_ptr() == key.data_ptr() == value.data_ptr()
-        # kv_same = key.data_ptr() == value.data_ptr()
-        assert qkv_same, f"{self.__class__.__name__} only supports self-attention"
+        kv_same = key.data_ptr() == value.data_ptr()
 
-        time, out_len, bsz, embed_dim = query.size()
+        if not tgt_attn:
+            query = query.transpose(0, 1)
+            key = key.transpose(0, 1)
+            value = value.transpose(0, 1)
+
+        out_len, src_size, true_bsz, embed_dim = query.size()
+        bsz = src_size * true_bsz
         assert embed_dim == self.embed_dim
-        assert list(query.size()) == [time, out_len, bsz, embed_dim]
+        assert list(query.size()) == [out_len, src_size, true_bsz, embed_dim]
         assert key.size() == value.size()
 
-        # if incremental_state is not None:
-        #     saved_state = self._get_input_buffer(incremental_state)
-        #     if 'prev_key' in saved_state:
-        #         # previous time steps are cached - no need to recompute
-        #         # key and value if they are static
-        #         if static_kv:
-        #             assert kv_same and not qkv_same
-        #             key = value = None
-        # else:
-        #     saved_state = None
+        # encoder self-attention does not need cache
+        if incremental_state is not None and tgt_attn:
+            saved_state = self._get_input_buffer(incremental_state)
+        else:
+            saved_state = None
 
-        # if qkv_same:
-        #     # self-attention
-        #     q, k, v = self.in_proj_qkv(query)
-        # elif kv_same:
-        #     # encoder-decoder attention
-        #     q = self.in_proj_q(query)
-        #     if key is None:
-        #         assert value is None
-        #         k = v = None
-        #     else:
-        #         k, v = self.in_proj_kv(key)
-        # else:
-        #     q = self.in_proj_q(query)
-        #     k = self.in_proj_k(key)
-        #     v = self.in_proj_v(value)
-        q, k, v = self.in_proj_qkv(query)
+        if qkv_same:
+            q, k, v = self.in_proj_qkv(query)
+        elif kv_same:
+            q = self.in_proj_q(query)
+            if key is None:
+                assert value is None
+                k = v = None
+            else:
+                k, v = self.in_proj_kv(key)
+        else:
+            q = self.in_proj_q(query)
+            k = self.in_proj_k(key)
+            v = self.in_proj_v(value)
         q *= self.scaling
 
-        # if saved_state is not None:
-        #
-        #     if 'prev_key' in saved_state:
-        #         if static_kv:
-        #             k = saved_state['prev_key']
-        #         else:
-        #             k = torch.cat((saved_state['prev_key'], k), dim=0)
-        #     if 'prev_value' in saved_state:
-        #         if static_kv:
-        #             v = saved_state['prev_value']
-        #         else:
-        #             v = torch.cat((saved_state['prev_value'], v), dim=0)
-        #     saved_state['prev_key'] = k
-        #     saved_state['prev_value'] = v
-        #
-        #     self._set_input_buffer(incremental_state, saved_state)
+        if saved_state is not None:
+
+            if 'prev_key' in saved_state:
+                k = torch.cat((saved_state['prev_key'], k), dim=0)
+            if 'prev_value' in saved_state:
+                v = torch.cat((saved_state['prev_value'], v), dim=0)
+            saved_state['prev_key'] = k
+            saved_state['prev_value'] = v
+
+            self._set_input_buffer(incremental_state, saved_state)
+
+        in_len = k.size(0)
+
+        q = q.contiguous().view(out_len, src_size * true_bsz, embed_dim)
+        k = k.contiguous().view(in_len, src_size * true_bsz, embed_dim)
+        v = v.contiguous().view(in_len, src_size * true_bsz, embed_dim)
 
         if self.bias_k is not None:
             assert self.bias_v is not None
@@ -138,59 +140,55 @@ class TemporalMultiheadAttention(nn.Module):
                 key_padding_mask = torch.cat(
                     [key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)], dim=1)
 
-        # out_len = k.size(0)
-        in_len = k.size(1)
-
         if key_padding_mask is not None:
-            assert key_padding_mask.size(0) == bsz
-            assert key_padding_mask.size(1) == out_len
+            assert key_padding_mask.size(0) == true_bsz
+            assert key_padding_mask.size(1) == in_len
 
-        # q = q.contiguous().view(time, bsz * self.num_heads, self.head_dim).transpose(0, 1)
-        # k = k.contiguous().view(out_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
-        # v = v.contiguous().view(out_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
+        q = q.contiguous().view(out_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
+        k = k.contiguous().view(in_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
+        v = v.contiguous().view(in_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
 
-        q = q.transpose(0, 1).contiguous().view(out_len, time * bsz * self.num_heads, self.head_dim).transpose(0, 1)
-        k = k.transpose(0, 1).contiguous().view(in_len, time * bsz * self.num_heads, self.head_dim).transpose(0, 1)
-        v = v.transpose(0, 1).contiguous().view(in_len, time * bsz * self.num_heads, self.head_dim).transpose(0, 1)
-
-        # if self.add_zero_attn:
-        #     out_len += 1
-        #     k = torch.cat([k, k.new_zeros((k.size(0), 1) + k.size()[2:])], dim=1)
-        #     v = torch.cat([v, v.new_zeros((v.size(0), 1) + v.size()[2:])], dim=1)
-        #     if attn_mask is not None:
-        #         attn_mask = torch.cat([attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1)
-        #     if key_padding_mask is not None:
-        #         key_padding_mask = torch.cat([key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)], dim=1)
+        if self.add_zero_attn:
+            in_len += 1
+            k = torch.cat([k, k.new_zeros((k.size(0), 1) + k.size()[2:])], dim=1)
+            v = torch.cat([v, v.new_zeros((v.size(0), 1) + v.size()[2:])], dim=1)
+            if attn_mask is not None:
+                attn_mask = torch.cat([attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1)
+            if key_padding_mask is not None:
+                key_padding_mask = torch.cat([key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)], dim=1)
 
         attn_weights = torch.bmm(q, k.transpose(1, 2))
-        assert list(attn_weights.size()) == [time * bsz * self.num_heads, out_len, in_len]
+        assert list(attn_weights.size()) == [bsz * self.num_heads, out_len, in_len]
 
-        attn_weights = attn_weights.view(time, bsz, self.num_heads, out_len, in_len)
         if attn_mask is not None:
-            # attn_weights += attn_mask.unsqueeze(0)
-            attn_weights += attn_mask.unsqueeze(1).unsqueeze(2).unsqueeze(3)
+            attn_weights += attn_mask.unsqueeze(0)
         if key_padding_mask is not None:
             # don't attend to padding symbols
-            # attn_weights = attn_weights.view(bsz, self.num_heads, time, out_len)
+            attn_weights = attn_weights.view(src_size, true_bsz, self.num_heads, out_len, in_len)
+            if tgt_attn:
+                key_padding_mask = key_padding_mask.transpose(0, 1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            else:
+                key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(2).unsqueeze(0)
             attn_weights = attn_weights.float().masked_fill(
-                # key_padding_mask.unsqueeze(1).unsqueeze(2),
-                key_padding_mask.unsqueeze(1).unsqueeze(2).unsqueeze(0),
+                key_padding_mask,
                 float('-inf'),
             ).type_as(attn_weights)  # FP16 support: cast to float and back
-            # attn_weights = attn_weights.view(bsz * self.num_heads, time, out_len)
-        attn_weights = attn_weights.view(time * bsz * self.num_heads, out_len, in_len)
+            attn_weights = attn_weights.view(src_size * true_bsz * self.num_heads, out_len, in_len)
 
         attn_weights = F.softmax(attn_weights.float(), dim=-1).type_as(attn_weights)
         attn_weights = F.dropout(attn_weights, p=self.dropout, training=self.training)
 
         attn = torch.bmm(attn_weights, v)
-        assert list(attn.size()) == [time * bsz * self.num_heads, out_len, self.head_dim]
-        attn = attn.transpose(0, 1).contiguous().view(out_len, time, bsz, embed_dim).transpose(0, 1)
+        assert list(attn.size()) == [bsz * self.num_heads, out_len, self.head_dim]
+        attn = attn.transpose(0, 1).contiguous().view(out_len, src_size, true_bsz, embed_dim)
         attn = self.out_proj(attn)
+
+        if not tgt_attn:
+            attn = attn.transpose(0, 1)
 
         if need_weights:
             # average attention weights over heads
-            attn_weights = attn_weights.view(time, bsz, self.num_heads, out_len, out_len)
+            attn_weights = attn_weights.view(src_size, true_bsz, self.num_heads, out_len, in_len)
             attn_weights = attn_weights.sum(dim=2) / self.num_heads
         else:
             attn_weights = None
@@ -222,10 +220,13 @@ class TemporalMultiheadAttention(nn.Module):
 
     def reorder_incremental_state(self, incremental_state, new_order):
         """Reorder buffered internal state (for incremental generation)."""
+        # Although encoder self-attention does not need cache, it still
+        # possesses an empty slot due to the calling of this function
         input_buffer = self._get_input_buffer(incremental_state)
         if input_buffer is not None:
             for k in input_buffer.keys():
-                input_buffer[k] = input_buffer[k].index_select(1, new_order)
+                # 2 is the Batch dim
+                input_buffer[k] = input_buffer[k].index_select(2, new_order)
             self._set_input_buffer(incremental_state, input_buffer)
 
     def _get_input_buffer(self, incremental_state):

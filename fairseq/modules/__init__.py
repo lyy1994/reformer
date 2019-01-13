@@ -17,7 +17,7 @@ from .linearized_convolution import LinearizedConvolution
 from .multihead_attention import MultiheadAttention
 from .scalar_bias import ScalarBias
 from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
-from .temporal_multihead_attention import TemporalMultiheadAttention
+from .multihead_attention_2d import MultiheadAttention2D
 
 __all__ = [
     'AdaptiveSoftmax',
@@ -32,5 +32,5 @@ __all__ = [
     'MultiheadAttention',
     'ScalarBias',
     'SinusoidalPositionalEmbedding',
-    'TemporalMultiheadAttention',
+    'MultiheadAttention2D',
 ]
