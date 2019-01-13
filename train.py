@@ -63,6 +63,18 @@ def main(args):
     print('| model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
     print('| num. model params: {}'.format(sum(p.numel() for p in model.parameters())))
 
+    # Print parameters' name, shape and size
+    names, shapes, sizes = ["name"], ["shape"], ["size"]
+    for name, param in model.named_parameters():
+        names.append(name)
+        shapes.append(str(list(param.size())))
+        sizes.append(str(param.numel()))
+    name_width = max([len(e) for e in names])
+    shape_width = max([len(e) for e in shapes])
+    size_width = max([len(e) for e in sizes])
+    for name, shape, size in zip(names, shapes, sizes):
+        print(f"||{name: <{name_width}}|{shape: <{shape_width}}|{size: <{size_width}} |")
+
     # Make a dummy batch to (i) warm the caching allocator and (ii) as a
     # placeholder DistributedDataParallel when there's an uneven number of
     # batches per worker.
