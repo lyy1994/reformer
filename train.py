@@ -64,16 +64,29 @@ def main(args):
     print('| num. model params: {}'.format(sum(p.numel() for p in model.parameters())))
 
     # Print parameters' name, shape and size
-    names, shapes, sizes = ["name"], ["shape"], ["size"]
+    total = sum(p.numel() for p in model.parameters())
+    names, shapes, sizes, percents = ["name"], ["shape"], ["size"], ["percent"]
     for name, param in model.named_parameters():
         names.append(name)
         shapes.append(str(list(param.size())))
         sizes.append(str(param.numel()))
+        percents.append("%.2f%%" % (param.numel() / float(total) * 100))
     name_width = max([len(e) for e in names])
     shape_width = max([len(e) for e in shapes])
     size_width = max([len(e) for e in sizes])
-    for name, shape, size in zip(names, shapes, sizes):
-        print(f"||{name: <{name_width}}|{shape: <{shape_width}}|{size: <{size_width}} |")
+    percent_width = max([len(e) for e in percents])
+    separate_line = '|' + '-' * (name_width + 2) + '|' + '-' * (shape_width + 2) + \
+                    '|' + '-' * (size_width + 2) + '|' + '-' * (percent_width + 2) + '|'
+    print(separate_line)
+    for i, (name, shape, size, percent) in enumerate(zip(names, shapes, sizes, percents)):
+        if i == 0:
+            print(f"| {name: ^{name_width}} | {shape: ^{shape_width}} "
+                  f"| {size: ^{size_width}} | {percent: ^{percent_width}} |")
+            print(separate_line)
+        else:
+            print(f"| {name: <{name_width}} | {shape: <{shape_width}} "
+                  f"| {size: <{size_width}} | {percent: >{percent_width}} |")
+    print(separate_line)
 
     # Make a dummy batch to (i) warm the caching allocator and (ii) as a
     # placeholder DistributedDataParallel when there's an uneven number of
