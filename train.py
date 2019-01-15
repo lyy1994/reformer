@@ -65,27 +65,32 @@ def main(args):
 
     # Print parameters' name, shape and size
     total = sum(p.numel() for p in model.parameters())
-    names, shapes, sizes, percents = ["name"], ["shape"], ["size"], ["percent"]
+    names, shapes, sizes, percents, devices = ["name"], ["shape"], ["size"], ["percent"], ["device"]
     for name, param in model.named_parameters():
         names.append(name)
         shapes.append(str(list(param.size())))
         sizes.append(str(param.numel()))
         percents.append("%.2f%%" % (param.numel() / float(total) * 100))
+        devices.append(str(param.device))
     name_width = max([len(e) for e in names])
     shape_width = max([len(e) for e in shapes])
     size_width = max([len(e) for e in sizes])
     percent_width = max([len(e) for e in percents])
+    device_width = max([len(e) for e in devices])
     separate_line = '|' + '-' * (name_width + 2) + '|' + '-' * (shape_width + 2) + \
-                    '|' + '-' * (size_width + 2) + '|' + '-' * (percent_width + 2) + '|'
+                    '|' + '-' * (size_width + 2) + '|' + '-' * (percent_width + 2) + \
+                    '|' + '-' * (device_width + 2) + '|'
     print(separate_line)
-    for i, (name, shape, size, percent) in enumerate(zip(names, shapes, sizes, percents)):
+    for i, (name, shape, size, percent, device) in enumerate(zip(names, shapes, sizes, percents, devices)):
         if i == 0:
             print(f"| {name: ^{name_width}} | {shape: ^{shape_width}} "
-                  f"| {size: ^{size_width}} | {percent: ^{percent_width}} |")
+                  f"| {size: ^{size_width}} | {percent: ^{percent_width}} "
+                  f"| {device: ^{device_width}} |")
             print(separate_line)
         else:
             print(f"| {name: <{name_width}} | {shape: <{shape_width}} "
-                  f"| {size: <{size_width}} | {percent: >{percent_width}} |")
+                  f"| {size: <{size_width}} | {percent: >{percent_width}} "
+                  f"| {device: <{device_width}} |")
     print(separate_line)
 
     # Make a dummy batch to (i) warm the caching allocator and (ii) as a
