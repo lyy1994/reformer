@@ -63,6 +63,23 @@ def main(args):
     print('| model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
     print('| num. model params: {}'.format(sum(p.numel() for p in model.parameters())))
 
+    # Make a dummy batch to (i) warm the caching allocator and (ii) as a
+    # placeholder DistributedDataParallel when there's an uneven number of
+    # batches per worker.
+    max_positions = utils.resolve_max_positions(
+        task.max_positions(),
+        model.max_positions(),
+    )
+    dummy_batch = task.dataset('train').get_dummy_batch(args.max_tokens, max_positions)
+
+    # Build trainer
+    trainer = Trainer(args, task, model, criterion, dummy_batch)
+    print('| training on {} GPUs'.format(args.distributed_world_size))
+    print('| max tokens per GPU = {} and max sentences per GPU = {}'.format(
+        args.max_tokens,
+        args.max_sentences,
+    ))
+
     # Print parameters' name, shape and size
     total = sum(p.numel() for p in model.parameters())
     names, shapes, sizes, percents, devices = ["name"], ["shape"], ["size"], ["percent"], ["device"]
@@ -92,23 +109,6 @@ def main(args):
                   f"| {size: <{size_width}} | {percent: >{percent_width}} "
                   f"| {device: <{device_width}} |")
     print(separate_line)
-
-    # Make a dummy batch to (i) warm the caching allocator and (ii) as a
-    # placeholder DistributedDataParallel when there's an uneven number of
-    # batches per worker.
-    max_positions = utils.resolve_max_positions(
-        task.max_positions(),
-        model.max_positions(),
-    )
-    dummy_batch = task.dataset('train').get_dummy_batch(args.max_tokens, max_positions)
-
-    # Build trainer
-    trainer = Trainer(args, task, model, criterion, dummy_batch)
-    print('| training on {} GPUs'.format(args.distributed_world_size))
-    print('| max tokens per GPU = {} and max sentences per GPU = {}'.format(
-        args.max_tokens,
-        args.max_sentences,
-    ))
 
     # Initialize dataloader
     epoch_itr = task.get_batch_iterator(
