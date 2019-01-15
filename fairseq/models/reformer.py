@@ -49,6 +49,12 @@ class ReformerModel(FairseqModel):
     @staticmethod
     def add_args(parser):
         """Add model-specific arguments to the parser."""
+        group = parser.add_argument_group('Model Parallelism')
+        group.add_argument('--model-parallelism', action='store_true', help='enable model parallelism')
+        group.add_argument('--model-parallelism-world-size', type=int, metavar='N',
+                           default=torch.cuda.device_count(),
+                           help='total number of GPUs across all nodes (default: all visible GPUs)')
+
         parser.add_argument('--dropout', type=float, metavar='D',
                             help='dropout probability')
         parser.add_argument('--attention-dropout', type=float, metavar='D',
@@ -135,7 +141,7 @@ class ReformerModel(FairseqModel):
                 tgt_dict, args.decoder_embed_dim, args.decoder_embed_path
             )
 
-        encoder = ReformerEncoder(args, src_dict, encoder_embed_tokens)
+        encoder = ReformerEncoder(args, src_dict, encoder_embed_tokens).cuda(0)
         decoder = ReformerDecoder(args, tgt_dict, decoder_embed_tokens)
         return ReformerModel(encoder, decoder)
 
@@ -278,49 +284,57 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         padding_idx = embed_tokens.padding_idx
         self.max_target_positions = args.max_target_positions
 
-        self.embed_tokens = embed_tokens
+        self.embed_tokens = embed_tokens.cuda(0)
         self.embed_scale = math.sqrt(embed_dim)  # todo: try with input_embed_dim
 
         self.project_in_dim = Linear(input_embed_dim, embed_dim, bias=False,
-                                     uniform=False) if embed_dim != input_embed_dim else None
+                                     uniform=False).cuda(0) if embed_dim != input_embed_dim else None
 
         self.embed_positions = PositionalEmbedding(
             args.max_target_positions, embed_dim, padding_idx,
             left_pad=left_pad,
             learned=args.decoder_learned_pos,
-        ) if not args.no_token_positional_embeddings else None
+        ).cuda(0) if not args.no_token_positional_embeddings else None
 
         self.tgt_embed = nn.Parameter(nn.init.normal_(
             torch.Tensor(embed_dim),
             mean=0, std=embed_dim ** -0.5
-        )) if args.src_tgt_embed else None
+        ).cuda(0)) if args.src_tgt_embed else None
 
-        self.compress = Linear(embed_dim * 2, embed_dim, bias=False, uniform=False)
+        self.compress = Linear(embed_dim * 2, embed_dim, bias=False, uniform=False).cuda(0)
+
+        # ceil allows less layer in the last device for the softmax layer
+        nlayers_per_device = math.ceil(args.decoder_layers / args.model_parallelism_world_size)
+        # we place softmax to the last device
+        share_embed_softmax = args.share_all_embeddings or args.share_decoder_input_output_embed
+        self.softmax_device = args.model_parallelism_world_size - 1 if not share_embed_softmax else 0
 
         self.layers = nn.ModuleList([])
         self.layers.extend([
-            ReformerDecoderLayer(args, no_encoder_attn)
-            for _ in range(args.decoder_layers)
+            ReformerDecoderLayer(args, no_encoder_attn, (i + int(share_embed_softmax)) // nlayers_per_device)
+                .cuda((i + int(share_embed_softmax)) // nlayers_per_device)
+            for i in range(args.decoder_layers)
         ])
 
         self.adaptive_softmax = None
 
         self.project_out_dim = Linear(embed_dim, output_embed_dim,
-                                      bias=False, uniform=False) if embed_dim != output_embed_dim else None
+                                      bias=False, uniform=False).cuda(
+            self.softmax_device) if embed_dim != output_embed_dim else None
 
         if args.adaptive_softmax_cutoff is not None:
             self.adaptive_softmax = AdaptiveSoftmax(
                 len(dictionary), output_embed_dim,
                 options.eval_str_list(args.adaptive_softmax_cutoff, type=int),
                 dropout=args.adaptive_softmax_dropout,
-            )
+            ).cuda(self.softmax_device)
         elif not self.share_input_output_embed:
-            self.embed_out = nn.Parameter(torch.Tensor(len(dictionary), output_embed_dim))
+            self.embed_out = nn.Parameter(torch.Tensor(len(dictionary), output_embed_dim).cuda(self.softmax_device))
             nn.init.normal_(self.embed_out, mean=0, std=output_embed_dim ** -0.5)
         self.register_buffer('version', torch.Tensor([2]))
         self.normalize = args.decoder_normalize_before and final_norm
         if self.normalize:
-            self.layer_norm = LayerNorm(embed_dim)
+            self.layer_norm = LayerNorm(embed_dim).cuda(self.softmax_device)
 
     def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None):
         """
@@ -391,6 +405,9 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             )
             inner_states.append(x)
 
+        # push the result to the device where softmax is hosted
+        x = x.cuda(self.softmax_device)
+
         if self.normalize:
             x = self.layer_norm(x)
 
@@ -411,6 +428,10 @@ class ReformerDecoder(FairseqIncrementalDecoder):
                 x = F.linear(x, self.embed_tokens.weight)
             else:
                 x = F.linear(x, self.embed_out)
+
+        # move the output to the first device to compute loss
+        # TODO: move loss computation to the device where softmax hosted
+        x = x.cuda(0)
 
         return x, {'attn': attn, 'inner_states': inner_states}
 
@@ -474,8 +495,9 @@ class ReformerDecoderLayer(nn.Module):
             Default: ``False``
     """
 
-    def __init__(self, args, no_encoder_attn=False):
+    def __init__(self, args, no_encoder_attn=False, device=0):
         super().__init__()
+        self.device = device
         self.embed_dim = args.decoder_embed_dim
         self.self_attn = MultiheadAttention2D(
             self.embed_dim, args.decoder_attention_heads,
@@ -520,6 +542,15 @@ class ReformerDecoderLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
+        # push the input to the device where the current layer is hosted
+        x, encoder_out, encoder_padding_mask, self_attn_mask, self_attn_padding_mask = \
+            x.cuda(self.device), \
+            encoder_out.cuda(self.device) if isinstance(encoder_out, torch.Tensor) else encoder_out, \
+            encoder_padding_mask.cuda(self.device) if isinstance(encoder_padding_mask,
+                                                                 torch.Tensor) else encoder_padding_mask, \
+            self_attn_mask.cuda(self.device) if isinstance(self_attn_mask, torch.Tensor) else self_attn_mask, \
+            self_attn_padding_mask.cuda(self.device) if isinstance(self_attn_padding_mask,
+                                                                   torch.Tensor) else self_attn_padding_mask
         # TODO: perform encoder self-attention first
         residual = x
         x = self.maybe_layer_norm(self.self_attn_layer_norm, x, before=True)
@@ -656,7 +687,7 @@ def reformer_iwslt_de_en(args):
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 256)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 1024)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 4)
-    args.decoder_layers = getattr(args, 'decoder_layers', 2)
+    args.decoder_layers = getattr(args, 'decoder_layers', 4)
     base_architecture(args)
 
 

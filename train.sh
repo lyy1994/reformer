@@ -3,7 +3,7 @@ set -e
 
 ######## hardware ########
 # devices
-devices=0
+devices=0,1
 
 ######## dataset ########
 # language: zh-en or en-zh
@@ -21,7 +21,7 @@ param=${model}"_iwslt_"${s}"_"${t}
 # defualt is 103k. About 10 epochs for 700w CWMT
 max_update=50000
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
-other_hparams=
+other_hparams="--decoder-normalize-before"
 
 ######## required ########
 # tag is the name of your experiments
@@ -64,6 +64,8 @@ $data_dir/$dataset
 -a $param
 -s $s
 -t $t
+--distributed-world-size 1
+--model-parallelism
 --no-progress-bar
 --log-interval 100
 --optimizer adam

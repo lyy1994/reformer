@@ -41,9 +41,10 @@ class Trainer(object):
         # copy model and criterion to current device
         self.criterion = criterion.cuda()
         if args.fp16:
-            self._model = model.half().cuda()
+            self._model = model.half()
         else:
-            self._model = model.cuda()
+            self._model = model
+        self._model = self._model.cuda() if not hasattr(args, 'model_parallelism') else self._model
 
         # initialize meters
         self.meters = OrderedDict()
