@@ -197,9 +197,6 @@ def add_distributed_training_args(parser):
 
 def add_optimization_args(parser):
     group = parser.add_argument_group('Optimization')
-    group.add_argument('--temporal', action='store_true',
-                       help='whether to use temporal trainer')
-
     group.add_argument('--max-epoch', '--me', default=0, type=int, metavar='N',
                        help='force stop training at specified epoch')
     group.add_argument('--max-update', '--mu', default=0, type=int, metavar='N',

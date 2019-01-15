@@ -98,11 +98,7 @@ def main(args):
     dummy_batch = task.dataset('train').get_dummy_batch(args.max_tokens, max_positions)
 
     # Build trainer
-    if args.temporal:
-        from fairseq.temporal_trainer import TTrainer
-        trainer = TTrainer(args, task, model, criterion, dummy_batch)
-    else:
-        trainer = Trainer(args, task, model, criterion, dummy_batch)
+    trainer = Trainer(args, task, model, criterion, dummy_batch)
     print('| training on {} GPUs'.format(args.distributed_world_size))
     print('| max tokens per GPU = {} and max sentences per GPU = {}'.format(
         args.max_tokens,

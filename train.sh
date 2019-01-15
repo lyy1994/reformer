@@ -21,11 +21,11 @@ param=${model}"_iwslt_"${s}"_"${t}
 # defualt is 103k. About 10 epochs for 700w CWMT
 max_update=50000
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
-other_hparams="--temporal"
+other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_past_loss
+tag=reformer
 
 
 
@@ -65,16 +65,17 @@ $data_dir/$dataset
 -s $s
 -t $t
 --no-progress-bar
+--log-interval 100
 --optimizer adam
 --lr 0.0005
 --label-smoothing 0.1
 --dropout 0.3
---max-tokens 4000
---update-freq 1
+--max-tokens 250
+--update-freq 16
 --min-lr 1e-09
 --lr-scheduler inverse_sqrt
 --weight-decay 0.0001
---criterion temporal_past_next_cross_entropy
+--criterion label_smoothed_cross_entropy
 --max-update $max_update
 --warmup-updates 4000
 --warmup-init-lr 1e-07
