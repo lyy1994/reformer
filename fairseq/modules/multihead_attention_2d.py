@@ -226,7 +226,7 @@ class MultiheadAttention2D(nn.Module):
         if input_buffer is not None:
             for k in input_buffer.keys():
                 # 2 is the Batch dim
-                input_buffer[k] = input_buffer[k].index_select(2, new_order)
+                input_buffer[k] = input_buffer[k].index_select(2, new_order.to(input_buffer[k].device))
             self._set_input_buffer(incremental_state, input_buffer)
 
     def _get_input_buffer(self, incremental_state):

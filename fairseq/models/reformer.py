@@ -428,8 +428,8 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             )
             inner_states.append(x)
 
-        # push the result to the first device
-        x = x.cuda()
+        # push the result to where softmax/embeddings hosted
+        x = x.to(self.embed_tokens.weight.device)
 
         if self.normalize:
             x = self.layer_norm(x)
