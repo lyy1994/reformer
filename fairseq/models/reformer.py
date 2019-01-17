@@ -313,6 +313,8 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         embed_dim = args.decoder_embed_dim
         output_embed_dim = args.decoder_output_dim
 
+        model_dim = args.decoder_model_dim
+
         padding_idx = embed_tokens.padding_idx
         self.max_target_positions = args.max_target_positions
 
@@ -333,8 +335,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             mean=0, std=embed_dim ** -0.5
         )) if args.src_tgt_embed else None
 
-        self.compress = Linear(embed_dim * 2, embed_dim, bias=False, uniform=False)
-
         self.layers = nn.ModuleList([])
         self.layers.extend([
             ReformerDecoderLayer(args, no_encoder_attn)
@@ -343,8 +343,13 @@ class ReformerDecoder(FairseqIncrementalDecoder):
 
         self.adaptive_softmax = None
 
-        self.project_out_dim = Linear(embed_dim, output_embed_dim,
-                                      bias=False, uniform=False) if embed_dim != output_embed_dim else None
+        # reduce function to compress model output before softmax
+        # Target x Source x Batch x Channel -> T x B x C
+        # TODO: more reduction functions
+        self.reduce = lambda x: x.max(dim=1)[0]
+
+        self.project_out_dim = Linear(model_dim, output_embed_dim,
+                                      bias=False, uniform=False) if model_dim != output_embed_dim else None
 
         if args.adaptive_softmax_cutoff is not None:
             self.adaptive_softmax = AdaptiveSoftmax(
@@ -358,7 +363,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         self.register_buffer('version', torch.Tensor([2]))
         self.normalize = args.decoder_normalize_before and final_norm
         if self.normalize:
-            self.layer_norm = LayerNorm(embed_dim, not args.non_parametric_normalize)
+            self.layer_norm = LayerNorm(model_dim, not args.non_parametric_normalize)
 
     def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None):
         """
@@ -412,9 +417,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         x = torch.cat(
             (encoder_out['encoder_out'].unsqueeze(0).repeat(tgt_len, 1, 1, 1),
              x.unsqueeze(1).repeat(1, src_len, 1, 1)), -1)
-        # compress 2*Channel -> Channel
-        # TODO: not to compress or more compress function
-        x = self.compress(x)
 
         inner_states = [x]
 
@@ -435,9 +437,8 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             x = self.layer_norm(x)
 
         # reduce the Source dim
-        # Target x Source x Batch x Channel -> T x B x C
-        # TODO: more reduction functions
-        x = x.max(dim=1)[0]
+        # TODO: reduce after project_out_dim
+        x = self.reduce(x)
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
@@ -611,7 +612,7 @@ class ReformerDecoderSubLayer(nn.Module):
         super().__init__()
         self.decoder_attn = decoder_attn
         self.fnn = fnn
-        self.embed_dim = args.decoder_embed_dim
+        self.embed_dim = args.decoder_model_dim
         self.self_attn = MultiheadAttention2D(
             self.embed_dim, args.decoder_attention_heads,
             dropout=args.attention_dropout,
@@ -743,8 +744,9 @@ def base_architecture(args):
     args.share_all_embeddings = getattr(args, 'share_all_embeddings', False)
     args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
 
-    args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_embed_dim)
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
+    args.decoder_model_dim = getattr(args, 'decoder_model_dim', args.encoder_embed_dim + args.decoder_embed_dim)
+    args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_model_dim)
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
     args.non_parametric_normalize = getattr(args, 'non_parametric_normalize', False)
@@ -761,7 +763,7 @@ def reformer_iwslt_de_en(args):
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 256)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 1024)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 4)
-    args.decoder_layers = getattr(args, 'decoder_layers', 4)
+    args.decoder_layers = getattr(args, 'decoder_layers', 2)
     base_architecture(args)
 
 
