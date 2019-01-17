@@ -2,8 +2,8 @@
 set -e
 
 ######## hardware (default) ########
-# device (-1 for cpu)
-device=1
+# devices (-1 for cpu)
+devices=0,1
 
 ######## dataset (default) ########
 # language: zh-en or en-zh
@@ -30,9 +30,11 @@ other_options="--quiet --remove-bpe"
 
 ######## models (default) ########
 # must exist
-tag=lwcm_small_deep_rich_fat_normb_embed
+tag=reformer_d256_l4_normb
 # used for specific model file
 model_file=checkpoint_best.pt
+# used to specify log name
+log_file=generate.log
 
 ######## evaluation (default) ########
 # evaluation or just decoding
@@ -42,7 +44,7 @@ eval_tool=../utils/scripts/multi-bleu.perl
 
 ######## args (reset default) ########
 # use args to reset default settings
-while getopts a:b:c opt; do
+while getopts a:b:cd:e: opt; do
   case $opt in
     a)
       echo -e "\033[33mreset datatype from $datatype to $OPTARG by -a\033[0m"
@@ -53,8 +55,16 @@ while getopts a:b:c opt; do
       model_file=$OPTARG
       ;;
     c)
-      echo -e "\033[33mdisable evaluation by -d\033[0m"
-      is_eval=0
+      echo -e "\033[33menable external evaluation by -d\033[0m"
+      is_eval=1
+      ;;
+    d)
+      echo -e "\033[33mreset log_file from $log_file to $OPTARG by -d\033[0m"
+      log_file=$OPTARG
+      ;;
+    e)
+      echo -e "\033[33mreset devices from $devices to $OPTARG by -e\033[0m"
+      devices=$OPTARG
       ;;
     \?)
       echo  -e "\033[31mInvalid option: -$OPTARG\033[0m"
@@ -121,7 +131,7 @@ fi
 
 # start decoding
 echo -e "\033[34mrun command: "${cmd}"\033[0m"
-CUDA_VISIBLE_DEVICES=${device} PYTHONPATH=`pwd` $cmd | tee $output_dir/generate.log
+CUDA_VISIBLE_DEVICES=${devices} PYTHONPATH=`pwd` $cmd | tee $output_dir/$log_file
 
 if [ $? -ne 0 ]; then
   exit -1
