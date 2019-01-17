@@ -19,6 +19,7 @@ from fairseq.tasks import TASK_REGISTRY
 def get_training_parser(default_task='translation'):
     parser = get_parser('Trainer', default_task)
     add_dataset_args(parser, train=True)
+    add_model_parallelism_args(parser)
     add_distributed_training_args(parser)
     add_model_args(parser)
     add_optimization_args(parser)
@@ -29,6 +30,7 @@ def get_training_parser(default_task='translation'):
 def get_generation_parser(interactive=False, default_task='translation'):
     parser = get_parser('Generation', default_task)
     add_dataset_args(parser, gen=True)
+    add_model_parallelism_args(parser)
     add_generation_args(parser)
     if interactive:
         add_interactive_args(parser)
@@ -192,6 +194,16 @@ def add_distributed_training_args(parser):
                        help='DistributedDataParallel backend')
     group.add_argument('--bucket-cap-mb', default=150, type=int, metavar='MB',
                        help='bucket size for reduction')
+    return group
+
+
+def add_model_parallelism_args(parser):
+    group = parser.add_argument_group('Model Parallelism')
+    group.add_argument('--model-parallelism', action='store_true', help='enable model parallelism')
+    group.add_argument('--model-parallelism-world-size', type=int, metavar='N',
+                       default=torch.cuda.device_count(),
+                       help='total number of GPUs across all nodes (default: all visible GPUs)')
+
     return group
 
 

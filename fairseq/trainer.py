@@ -44,7 +44,7 @@ class Trainer(object):
             self._model = model.half()
         else:
             self._model = model
-        self._model = self._model.cuda() if not hasattr(args, 'model_parallelism') else self._model
+        self._model = self._model.cuda() if not args.model_parallelism else self._model
 
         # initialize meters
         self.meters = OrderedDict()

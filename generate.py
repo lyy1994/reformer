@@ -31,6 +31,11 @@ def main(args):
 
     use_cuda = torch.cuda.is_available() and not args.cpu
 
+    # override model parallelism settings for each model
+    model_overrides = eval(args.model_overrides)
+    model_overrides['model_parallelism'] = args.model_parallelism
+    model_overrides['model_parallelism_world_size'] = args.model_parallelism_world_size
+
     # Load dataset splits
     task = tasks.setup_task(args)
     task.load_dataset(args.gen_subset)
@@ -42,7 +47,7 @@ def main(args):
 
     # Load ensemble
     print('| loading model(s) from {}'.format(args.path))
-    models, _ = utils.load_ensemble_for_inference(args.path.split(':'), task, model_arg_overrides=eval(args.model_overrides))
+    models, _ = utils.load_ensemble_for_inference(args.path.split(':'), task, model_arg_overrides=model_overrides)
 
     # Optimize ensemble for generation
     for model in models:
@@ -85,7 +90,7 @@ def main(args):
             diverse_beam_groups=args.diverse_beam_groups, diverse_beam_strength=args.diverse_beam_strength,
         )
 
-    if use_cuda:
+    if use_cuda and not args.model_parallelism:
         translator.cuda()
 
     # Generate and compute BLEU score
