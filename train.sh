@@ -19,13 +19,13 @@ model=reformer
 # which hparams 
 param=${model}"_iwslt_"${s}"_"${t}
 # defualt is 103k. About 10 epochs for 700w CWMT
-max_update=50000
+max_update=20000
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
 other_hparams="--decoder-normalize-before"
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer
+tag=reformer_e256_m512_l2_normb
 
 
 
@@ -64,24 +64,38 @@ $data_dir/$dataset
 -a $param
 -s $s
 -t $t
+
+--encoder-embed-dim 256
+--decoder-embed-dim 256
+--decoder-ffn-embed-dim 1024
+--decoder-attention-heads 4
+--decoder-layers 2
+--dropout 0.3
+
 --distributed-world-size 1
 --model-parallelism
+--model-parallelism-debug
+
 --no-progress-bar
 --log-interval 100
---optimizer adam
---lr 0.0005
---label-smoothing 0.1
---dropout 0.3
+
+--max-update $max_update
 --max-tokens 250
 --update-freq 16
---min-lr 1e-09
---lr-scheduler inverse_sqrt
---weight-decay 0.0001
+
 --criterion label_smoothed_cross_entropy
---max-update $max_update
+--label-smoothing 0.1
+--weight-decay 0.0001
+
+--lr-scheduler inverse_sqrt
 --warmup-updates 4000
 --warmup-init-lr 1e-07
---save-dir $output_dir"
+--min-lr 1e-09
+--lr 0.0005
+
+--save-dir $output_dir
+
+--optimizer adam"
 cmd=${cmd}" --adam-betas "${adam_betas}
 if [ -n "$other_hparams" ]; then
   cmd=${cmd}" "${other_hparams}

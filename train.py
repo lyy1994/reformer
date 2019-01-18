@@ -82,7 +82,7 @@ def main(args):
 
     # Print parameters' name, shape and size
     total = sum(p.numel() for p in model.parameters())
-    names, shapes, sizes, percents, devices = ["name"], ["shape"], ["size"], ["percent"], ["device"]
+    names, shapes, sizes, percents, devices = ["parameter name"], ["shape"], ["size"], ["percent"], ["device"]
     for name, param in model.named_parameters():
         names.append(name)
         shapes.append(str(list(param.size())))

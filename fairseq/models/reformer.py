@@ -166,6 +166,7 @@ class ReformerModel(FairseqModel):
             # starting from 1 and add 1 implies extra one sublayer space for embeddings and softmax in the first device
             sublayer_id = 1
             sublayers_per_device = math.ceil((nsublayers + 1) / args.model_parallelism_world_size)
+            names, devices = ['module name'], ['device']
             for name, module in model.named_modules(prefix='reformer'):
                 # we only distribute sublayers to different GPU
                 if isinstance(module, ReformerDecoderSubLayer):
@@ -174,7 +175,21 @@ class ReformerModel(FairseqModel):
                         f'try to assign a sublayer {name} to a invalid device {MODULE_DEVICE[module._id]}\n' \
                         f'Fix bugs in the sublayer allocation strategy!!!'
                     module.cuda(MODULE_DEVICE[module._id])
+                    names.append(name)
+                    devices.append(f'cuda:{MODULE_DEVICE[module._id]}')
                     sublayer_id += 1
+            if args.model_parallelism_debug:
+                name_width = max([len(e) for e in names])
+                device_width = max([len(e) for e in devices])
+                separate_line = '|' + '-' * (name_width + 2) + '|' + '-' * (device_width + 2) + '|'
+                print(separate_line)
+                for i, (name, device) in enumerate(zip(names, devices)):
+                    if i == 0:
+                        print(f"| {name: ^{name_width}} | {device: ^{device_width}} |")
+                        print(separate_line)
+                    else:
+                        print(f"| {name: <{name_width}} | {device: <{device_width}} |")
+                print(separate_line)
             return model
 
 
