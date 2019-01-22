@@ -34,7 +34,9 @@ def main(args):
     # override model parallelism settings for each model
     model_overrides = eval(args.model_overrides)
     model_overrides['model_parallelism'] = args.model_parallelism if use_cuda else False
+    model_overrides['model_parallelism_debug'] = args.model_parallelism_debug
     model_overrides['model_parallelism_world_size'] = args.model_parallelism_world_size
+    model_overrides['pseudo_sublayers'] = args.pseudo_sublayers
 
     # Load dataset splits
     task = tasks.setup_task(args)

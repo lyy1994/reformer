@@ -204,6 +204,9 @@ def add_model_parallelism_args(parser):
     group.add_argument('--model-parallelism-world-size', type=int, metavar='N',
                        default=torch.cuda.device_count(),
                        help='total number of GPUs across all nodes (default: all visible GPUs)')
+    group.add_argument('--pseudo-sublayers', type=int, metavar='N', default=1,
+                       help='add pseudo sublayers to make room for both '
+                            'embeddings and softmax in the first device')
 
     return group
 

@@ -94,14 +94,18 @@ class ReformerModel(FairseqModel):
                             help='use source and target embeddings')
         parser.add_argument('--non-parametric-normalize', action='store_true',
                             help='layer normalization without element-wise affine transformation')
-        parser.add_argument('--encoder-sublayer-before', action='store_true',
-                            help='apply encoder self-attention before decoder self-attention')
-        parser.add_argument('--encoder-fnn', action='store_true',
-                            help='apply fnn after encoder self-attention')
+        parser.add_argument('--decoder-sublayer-before', action='store_true',
+                            help='apply decoder self-attention before encoder self-attention')
+        parser.add_argument('--encoder-ffn', action='store_true',
+                            help='apply ffn after encoder self-attention')
+        parser.add_argument('--encoder-single-relu', action='store_true',
+                            help='apply relu if there is no ffn after encoder self-attention')
         parser.add_argument('--encoder-sublayers', type=int, metavar='N',
                             help='num encoder sublayers within one block')
-        parser.add_argument('--decoder-fnn', action='store_true',
-                            help='apply fnn after decoder self-attention')
+        parser.add_argument('--decoder-ffn', action='store_true',
+                            help='apply ffn after decoder self-attention')
+        parser.add_argument('--decoder-single-relu', action='store_true',
+                            help='apply relu if there is no ffn after decoder self-attention')
         parser.add_argument('--decoder-sublayers', type=int, metavar='N',
                             help='num decoder sublayers within one block')
 
@@ -162,10 +166,12 @@ class ReformerModel(FairseqModel):
         else:
             # we first put all parameters and buffers to a single GPU
             model.cuda()
-            nsublayers = args.decoder_layers * (args.encoder_sublayers + args.decoder_sublayers)
-            # starting from 1 and add 1 implies extra one sublayer space for embeddings and softmax in the first device
-            sublayer_id = 1
-            sublayers_per_device = math.ceil((nsublayers + 1) / args.model_parallelism_world_size)
+            encoder_sublayers = args.encoder_sublayers if not args.encoder_ffn else args.encoder_sublayers + 1
+            decoder_sublayers = args.decoder_sublayers if not args.decoder_ffn else args.decoder_sublayers + 1
+            nsublayers = args.decoder_layers * (encoder_sublayers + decoder_sublayers)
+            # starting from N implies making extra N sublayers space for embeddings and softmax in the first device
+            sublayer_id = args.pseudo_sublayers
+            sublayers_per_device = math.ceil((nsublayers + sublayer_id) / args.model_parallelism_world_size)
             names, devices = ['module name'], ['device']
             for name, module in model.named_modules(prefix='reformer'):
                 # we only distribute sublayers to different GPU
@@ -484,34 +490,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             self._future_mask = torch.triu(utils.fill_with_neg_inf(self._future_mask.resize_(dim, dim)), 1)
         return self._future_mask[:dim, :dim]
 
-    def upgrade_state_dict(self, state_dict):
-        """Upgrade a (possibly old) state dict for new versions of fairseq."""
-        if isinstance(self.embed_positions, SinusoidalPositionalEmbedding):
-            if 'decoder.embed_positions.weights' in state_dict:
-                del state_dict['decoder.embed_positions.weights']
-            state_dict['decoder.embed_positions._float_tensor'] = torch.FloatTensor(1)
-
-        for i in range(len(self.layers)):
-            # update layer norms
-            layer_norm_map = {
-                '0': 'self_attn_layer_norm',
-                '1': 'encoder_attn_layer_norm',
-                '2': 'final_layer_norm'
-            }
-            for old, new in layer_norm_map.items():
-                for m in ('weight', 'bias'):
-                    k = 'decoder.layers.{}.layer_norms.{}.{}'.format(i, old, m)
-                    if k in state_dict:
-                        state_dict['decoder.layers.{}.{}.{}'.format(i, new, m)] = state_dict[k]
-                        del state_dict[k]
-        if utils.item(state_dict.get('decoder.version', torch.Tensor([1]))[0]) < 2:
-            # earlier checkpoints did not normalize after the stack of layers
-            self.layer_norm = None
-            self.normalize = False
-            state_dict['decoder.version'] = torch.Tensor([1])
-
-        return state_dict
-
 
 class ReformerDecoderLayer(nn.Module):
     """Decoder layer block.
@@ -533,24 +511,33 @@ class ReformerDecoderLayer(nn.Module):
     def __init__(self, args, no_encoder_attn=False):
         super().__init__()
         self.no_encoder_attn = no_encoder_attn
-        self.encoder_sublayer_before = args.encoder_sublayer_before
-        # sublayer declaration order must match their computation order,
-        # which helps to avoid potential extra communication cost
-        self.maybe_declare(ReformerDecoderSubLayer, args, before=True)
+        self.decoder_sublayer_before = args.decoder_sublayer_before
+        # sublayer declaration order must match their computation order, which
+        # helps to avoid potential extra communication cost due to auto-register
+        self.maybe_declare('decoder', args, before=True)
         if not self.no_encoder_attn:
-            self.encoder_sublayers = nn.ModuleList([
-                ReformerDecoderSubLayer(args, decoder_attn=False, fnn=args.encoder_fnn)
-                for _ in range(args.encoder_sublayers)
-            ])
-        self.maybe_declare(ReformerDecoderSubLayer, args, after=True)
+            self.declare('encoder', args)
+        self.maybe_declare('decoder', args, after=True)
 
-    def maybe_declare(self, sublayer, args, before=False, after=False):
+    def maybe_declare(self, sublayer_type, args, before=False, after=False):
         assert before ^ after
-        if before ^ self.encoder_sublayer_before:
-            self.decoder_sublayers = nn.ModuleList([
-                sublayer(args, decoder_attn=True, fnn=args.decoder_fnn)
-                for _ in range(args.decoder_sublayers)
-            ])
+        if after ^ getattr(self, f'{sublayer_type}_sublayer_before'):
+            self.declare(sublayer_type, args)
+
+    def declare(self, sublayer_type, args):
+        assert sublayer_type in ['encoder', 'decoder']
+        decoder_attn = True if sublayer_type == 'decoder' else False
+        nsublayers = getattr(args, f'{sublayer_type}_sublayers')
+        sublayers = nn.ModuleList([])
+        for _ in range(nsublayers):
+            # add self-attention layer
+            sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=False))
+            # add ffn layer
+            if getattr(args, f'{sublayer_type}_ffn'):
+                sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
+            elif getattr(args, f'{sublayer_type}_single_relu'):
+                sublayers.append(nn.ReLU())
+        setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def forward(self, x, encoder_padding_mask, incremental_state,
                 self_attn_mask=None, self_attn_padding_mask=None):
@@ -563,31 +550,41 @@ class ReformerDecoderLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
-        x, dec_attn = self.maybe_apply(x, encoder_padding_mask, incremental_state,
-                                       self_attn_mask, self_attn_padding_mask, before=True)
+        x, dec_attn = self.maybe_run('decoder', x, encoder_padding_mask, incremental_state,
+                                     self_attn_mask, self_attn_padding_mask, before=True)
 
         enc_attn = None
         if not self.no_encoder_attn:
-            for layer in self.encoder_sublayers:
-                x, enc_attn = layer(x, encoder_padding_mask, incremental_state,
-                                    self_attn_mask=self_attn_mask,
-                                    self_attn_padding_mask=self_attn_padding_mask)
+            x, enc_attn = self.run('encoder', x, encoder_padding_mask, incremental_state,
+                                   self_attn_mask=self_attn_mask,
+                                   self_attn_padding_mask=self_attn_padding_mask)
 
-        x, dec_attn = self.maybe_apply(x, encoder_padding_mask, incremental_state,
-                                       self_attn_mask, self_attn_padding_mask, after=True)
+        x, dec_attn = self.maybe_run('decoder', x, encoder_padding_mask, incremental_state,
+                                     self_attn_mask, self_attn_padding_mask, after=True)
 
         return x, enc_attn
 
-    def maybe_apply(self, x, encoder_padding_mask, incremental_state, self_attn_mask, self_attn_padding_mask,
-                    before=False, after=False):
+    def maybe_run(self, sublayer_type, x, encoder_padding_mask, incremental_state, self_attn_mask,
+                  self_attn_padding_mask, before=False, after=False):
         assert before ^ after
-        dec_attn = None
-        if before ^ self.encoder_sublayer_before:
-            for layer in self.decoder_sublayers:
-                x, dec_attn = layer(x, encoder_padding_mask, incremental_state,
-                                    self_attn_mask=self_attn_mask,
-                                    self_attn_padding_mask=self_attn_padding_mask)
-        return x, dec_attn
+        attn = None
+        if after ^ getattr(self, f'{sublayer_type}_sublayer_before'):
+            x, attn = self.run(sublayer_type, x, encoder_padding_mask, incremental_state,
+                               self_attn_mask=self_attn_mask,
+                               self_attn_padding_mask=self_attn_padding_mask)
+        return x, attn
+
+    def run(self, sublayer_type, x, encoder_padding_mask, incremental_state, self_attn_mask, self_attn_padding_mask):
+        assert sublayer_type in ['encoder', 'decoder']
+        attn = None
+        for layer in getattr(self, f'{sublayer_type}_sublayers'):
+            if isinstance(layer, ReformerDecoderSubLayer):
+                x, attn = layer(x, encoder_padding_mask, incremental_state,
+                                self_attn_mask=self_attn_mask,
+                                self_attn_padding_mask=self_attn_padding_mask)
+            else:
+                x = layer(x)
+        return x, attn
 
 
 INCREMENTAL_MODULE_INSTANCE_ID = collections.defaultdict(lambda: 0)
@@ -618,37 +615,31 @@ def fetch_input(forward_fn):
 
 class ReformerDecoderSubLayer(nn.Module):
     """
-    Decoder sublayer, performs only one attention followed with add residual
-    and layer normalization, and optionally fnn projection
+    Decoder sublayer, performs only one attention/ffn followed with add residual
+    and layer normalization
     """
 
     @register_module
-    def __init__(self, args, decoder_attn=True, fnn=True):
+    def __init__(self, args, decoder_attn=True, is_ffn=True):
         super().__init__()
         self.decoder_attn = decoder_attn
-        self.fnn = fnn
+        self.is_ffn = is_ffn
         self.embed_dim = args.decoder_model_dim
-        self.self_attn = MultiheadAttention2D(
-            self.embed_dim, args.decoder_attention_heads,
-            dropout=args.attention_dropout,
-        )
         self.dropout = args.dropout
         self.relu_dropout = args.relu_dropout
         self.normalize_before = args.decoder_normalize_before
 
-        self.self_attn_layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
-
-        if self.fnn:
+        if self.is_ffn:
             self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
             self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
+        else:
+            self.self_attn = MultiheadAttention2D(
+                self.embed_dim, args.decoder_attention_heads,
+                dropout=args.attention_dropout,
+            )
+            self.need_attn = True
 
-            self.final_layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
-        self.need_attn = True
-
-        self.onnx_trace = False
-
-    def prepare_for_onnx_export_(self):
-        self.onnx_trace = True
+        self.layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
 
     @fetch_input
     def forward(self, x, encoder_padding_mask, incremental_state,
@@ -662,36 +653,28 @@ class ReformerDecoderSubLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
+        attn = None
 
         residual = x
-        x = self.maybe_layer_norm(self.self_attn_layer_norm, x, before=True)
-        x, attn = self.self_attn(
-            query=x,
-            key=x,
-            value=x,
-            key_padding_mask=self_attn_padding_mask if self.decoder_attn else encoder_padding_mask,
-            incremental_state=incremental_state,
-            need_weights=(not self.training and self.need_attn),
-            attn_mask=self_attn_mask if self.decoder_attn else None,
-            tgt_attn=self.decoder_attn,
-        )
-        x = F.dropout(x, p=self.dropout, training=self.training)
-        x = residual + x
-        x = self.maybe_layer_norm(self.self_attn_layer_norm, x, after=True)
-
-        if self.fnn:
-            residual = x
-            x = self.maybe_layer_norm(self.final_layer_norm, x, before=True)
+        x = self.maybe_layer_norm(self.layer_norm, x, before=True)
+        if self.is_ffn:
             x = F.relu(self.fc1(x))
             x = F.dropout(x, p=self.relu_dropout, training=self.training)
             x = self.fc2(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-            x = residual + x
-            x = self.maybe_layer_norm(self.final_layer_norm, x, after=True)
-        if self.onnx_trace:
-            saved_state = self.self_attn._get_input_buffer(incremental_state)
-            self_attn_state = saved_state["prev_key"], saved_state["prev_value"]
-            return x, attn, self_attn_state
+        else:
+            x, attn = self.self_attn(
+                query=x,
+                key=x,
+                value=x,
+                key_padding_mask=self_attn_padding_mask if self.decoder_attn else encoder_padding_mask,
+                incremental_state=incremental_state,
+                need_weights=(not self.training and self.need_attn),
+                attn_mask=self_attn_mask if self.decoder_attn else None,
+                tgt_attn=self.decoder_attn,
+            )
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = residual + x
+        x = self.maybe_layer_norm(self.layer_norm, x, after=True)
         return x, attn
 
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
@@ -765,10 +748,12 @@ def base_architecture(args):
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
     args.non_parametric_normalize = getattr(args, 'non_parametric_normalize', False)
-    args.encoder_sublayer_before = getattr(args, 'encoder_sublayer_before', False)
-    args.encoder_fnn = getattr(args, 'encoder_fnn', True)
+    args.decoder_sublayer_before = getattr(args, 'decoder_sublayer_before', False)
+    args.encoder_ffn = getattr(args, 'encoder_ffn', False)
+    args.encoder_single_relu = getattr(args, 'encoder_single_relu', False)
     args.encoder_sublayers = getattr(args, 'encoder_sublayers', 1)
-    args.decoder_fnn = getattr(args, 'decoder_fnn', False)
+    args.decoder_ffn = getattr(args, 'decoder_ffn', False)
+    args.decoder_single_relu = getattr(args, 'decoder_single_relu', False)
     args.decoder_sublayers = getattr(args, 'decoder_sublayers', 1)
 
 
