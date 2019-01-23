@@ -110,7 +110,7 @@ class TestMultiheadAttention2D(unittest.TestCase):
         time = 1
         batch = 1
 
-        attn = MultiheadAttention2D(8, head)
+        attn = MultiheadAttention2D(8, head, tgt_attn=False)
         # Time x Source x Batch x Channel
         # 3 x 5 x 2 x 8
         query = torch.randn(3, 5, 2, 8)
@@ -130,12 +130,12 @@ class TestMultiheadAttention2D(unittest.TestCase):
 
         # in parallel training
         res, _ = attn(query, query, query,
-                      key_padding_mask=key_padding_mask, attn_mask=None, tgt_attn=False)
+                      key_padding_mask=key_padding_mask, attn_mask=None)
         # in one step training / decoding (without cache)
         res2, _ = attn(query[time:time + 1, :, batch:batch + 1, :],
                        query[time:time + 1, :, batch:batch + 1, :],
                        query[time:time + 1, :, batch:batch + 1, :],
-                       key_padding_mask=key_padding_mask[batch:batch+1, :], attn_mask=None, tgt_attn=False)
+                       key_padding_mask=key_padding_mask[batch:batch+1, :], attn_mask=None)
         res2 = res2.squeeze(2)
 
         # correct answer, verified in 2D cases (num_heads=1)

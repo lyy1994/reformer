@@ -17,7 +17,8 @@ class MultiheadAttention2D(nn.Module):
     """Multi-headed attention with 2D inputs (src x tgt).
     """
 
-    def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False):
+    def __init__(self, embed_dim, num_heads, dropout=0., bias=True, add_bias_kv=False, add_zero_attn=False,
+                 tgt_attn=True):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -41,6 +42,8 @@ class MultiheadAttention2D(nn.Module):
 
         self.add_zero_attn = add_zero_attn
 
+        self.tgt_attn = tgt_attn
+
         self.reset_parameters()
 
         self.onnx_trace = False
@@ -59,8 +62,11 @@ class MultiheadAttention2D(nn.Module):
         if self.bias_v is not None:
             nn.init.xavier_normal_(self.bias_v)
 
+    def extra_repr(self):
+        return 'tgt_attn={},'.format(self.tgt_attn)
+
     def forward(self, query, key, value, key_padding_mask=None, incremental_state=None, need_weights=True,
-                attn_mask=None, tgt_attn=True):
+                attn_mask=None):
         """
         To perform decoder self-attention: tgt_attn=True, attn_mask is not None (train).
         To perform encoder self-attention: tgt_attn=False, key_padding_mask is not None, qkv_same=True.
@@ -71,8 +77,7 @@ class MultiheadAttention2D(nn.Module):
         :param incremental_state:
         :param need_weights:
         :param attn_mask: Output x Input, required only reduce_tgt=True
-        :param tgt_attn: default True. Reduce Input dim (decoder self-attention),
-        otherwise reduce Source dim (encoder self-attention).
+        otherwise output_layer Source dim (encoder self-attention).
         :return:
         """
         # since data_ptr() is used to detect whether q, k, v are the same be
@@ -81,7 +86,7 @@ class MultiheadAttention2D(nn.Module):
         qkv_same = query.data_ptr() == key.data_ptr() == value.data_ptr()
         kv_same = key.data_ptr() == value.data_ptr()
 
-        if not tgt_attn:
+        if not self.tgt_attn:
             query = query.transpose(0, 1)
             key = key.transpose(0, 1)
             value = value.transpose(0, 1)
@@ -93,7 +98,7 @@ class MultiheadAttention2D(nn.Module):
         assert key.size() == value.size()
 
         # encoder self-attention does not need cache
-        if incremental_state is not None and tgt_attn:
+        if incremental_state is not None and self.tgt_attn:
             saved_state = self._get_input_buffer(incremental_state)
         else:
             saved_state = None
@@ -155,7 +160,8 @@ class MultiheadAttention2D(nn.Module):
             if attn_mask is not None:
                 attn_mask = torch.cat([attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1)
             if key_padding_mask is not None:
-                key_padding_mask = torch.cat([key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)], dim=1)
+                key_padding_mask = torch.cat(
+                    [key_padding_mask, key_padding_mask.new_zeros(key_padding_mask.size(0), 1)], dim=1)
 
         attn_weights = torch.bmm(q, k.transpose(1, 2))
         assert list(attn_weights.size()) == [bsz * self.num_heads, out_len, in_len]
@@ -165,7 +171,7 @@ class MultiheadAttention2D(nn.Module):
         if key_padding_mask is not None:
             # don't attend to padding symbols
             attn_weights = attn_weights.view(src_size, true_bsz, self.num_heads, out_len, in_len)
-            if tgt_attn:
+            if self.tgt_attn:
                 key_padding_mask = key_padding_mask.transpose(0, 1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
             else:
                 key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(2).unsqueeze(0)
@@ -183,7 +189,7 @@ class MultiheadAttention2D(nn.Module):
         attn = attn.transpose(0, 1).contiguous().view(out_len, src_size, true_bsz, embed_dim)
         attn = self.out_proj(attn)
 
-        if not tgt_attn:
+        if not self.tgt_attn:
             attn = attn.transpose(0, 1)
 
         if need_weights:

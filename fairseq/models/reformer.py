@@ -636,6 +636,7 @@ class ReformerDecoderSubLayer(nn.Module):
             self.self_attn = MultiheadAttention2D(
                 self.embed_dim, args.decoder_attention_heads,
                 dropout=args.attention_dropout,
+                tgt_attn=self.decoder_attn,
             )
             self.need_attn = True
 
@@ -670,7 +671,6 @@ class ReformerDecoderSubLayer(nn.Module):
                 incremental_state=incremental_state,
                 need_weights=(not self.training and self.need_attn),
                 attn_mask=self_attn_mask if self.decoder_attn else None,
-                tgt_attn=self.decoder_attn,
             )
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
