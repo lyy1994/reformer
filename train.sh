@@ -21,11 +21,11 @@ param=${model}"_iwslt_"${s}"_"${t}
 # defualt is 103k. About 10 epochs for 700w CWMT
 max_update=20000
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
-other_hparams="--decoder-normalize-before"
+other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_e256_m512_l2_normb
+tag=reformer_e256_m256_l7_add_maxnorm_dropb_normb_decb_encffn_dropout0
 
 
 
@@ -69,8 +69,14 @@ $data_dir/$dataset
 --decoder-embed-dim 256
 --decoder-ffn-embed-dim 1024
 --decoder-attention-heads 4
---decoder-layers 2
---dropout 0.3
+--decoder-layers 7
+--decoder-normalize-before
+--decoder-sublayer-before
+--encoder-ffn
+--decoder-input-layer add
+--decoder-output-layer max-norm
+--dropout-before
+--dropout 0
 
 --distributed-world-size 1
 --model-parallelism

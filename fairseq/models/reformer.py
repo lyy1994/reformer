@@ -26,6 +26,11 @@ from . import (
 )
 
 
+VALID_INPUT_LAYER = {'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
+                     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim}
+VALID_OUTPUT_LAYER = ['max', 'min', 'mean', 'max-norm', 'min-norm', 'mean-norm']
+
+
 MODULE_DEVICE = collections.defaultdict(lambda: None)
 
 
@@ -90,6 +95,12 @@ class ReformerModel(FairseqModel):
         parser.add_argument('--adaptive-softmax-dropout', type=float, metavar='D',
                             help='sets adaptive softmax dropout for the tail projections')
 
+        parser.add_argument('--decoder-input-layer', choices=VALID_INPUT_LAYER.keys(),
+                            help='the method chosen to produce the 2D input')
+        parser.add_argument('--decoder-output-layer', choices=VALID_OUTPUT_LAYER,
+                            help='the method chosen to produce the 1D output')
+        parser.add_argument('--dropout-before', action='store_true',
+                            help='apply dropout to embeddings before the input layer')
         parser.add_argument('--src-tgt-embed', action='store_true',
                             help='use source and target embeddings')
         parser.add_argument('--non-parametric-normalize', action='store_true',
@@ -214,7 +225,6 @@ class ReformerEncoder(FairseqEncoder):
 
     def __init__(self, args, dictionary, embed_tokens, left_pad=True):
         super().__init__(dictionary)
-        self.dropout = args.dropout
 
         embed_dim = embed_tokens.embedding_dim
         self.padding_idx = embed_tokens.padding_idx
@@ -255,8 +265,7 @@ class ReformerEncoder(FairseqEncoder):
         if self.embed_positions is not None:
             x += self.embed_positions(src_tokens)
         if self.src_embed is not None:
-            x += self.src_embed.unsqueeze(0)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+            x += self.src_embed.unsqueeze(0) * self.embed_scale
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -356,6 +365,9 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             mean=0, std=embed_dim ** -0.5
         )) if args.src_tgt_embed else None
 
+        self.dropout_before = args.dropout_before
+        self.input_layer = ReformerInputLayer(args)
+
         self.layers = nn.ModuleList([])
         self.layers.extend([
             ReformerDecoderLayer(args, no_encoder_attn)
@@ -363,11 +375,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         ])
 
         self.adaptive_softmax = None
-
-        # reduce function to compress model output before softmax
-        # Target x Source x Batch x Channel -> T x B x C
-        # TODO: more reduction functions
-        self.reduce = lambda x: x.max(dim=1)[0]
 
         self.project_out_dim = Linear(model_dim, output_embed_dim,
                                       bias=False, uniform=False) if model_dim != output_embed_dim else None
@@ -385,6 +392,10 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         self.normalize = args.decoder_normalize_before and final_norm
         if self.normalize:
             self.layer_norm = LayerNorm(model_dim, not args.non_parametric_normalize)
+
+        # output_layer function to compress model output before softmax
+        # Target x Source x Batch x Channel -> T x B x C
+        self.output_layer = ReformerOutputLayer(args)
 
     def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None):
         """
@@ -423,21 +434,22 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         if positions is not None:
             x += positions
         if self.tgt_embed is not None:
-            x += self.tgt_embed.unsqueeze(0)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+            x += self.tgt_embed.unsqueeze(0) * self.embed_scale
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
         attn = None
 
+        src_input, tgt_input = encoder_out['encoder_out'], x
+        if self.dropout_before:
+            src_input = F.dropout(src_input, p=self.dropout, training=self.training)
+            tgt_input = F.dropout(tgt_input, p=self.dropout, training=self.training)
         # form a source-target 2D representation
-        # Target x Source x Batch x 2*Channel
-        # TODO: more ways to form 2D representation
-        src_len = encoder_out['encoder_out'].size(0)
-        tgt_len = x.size(0)
-        x = torch.cat(
-            (encoder_out['encoder_out'].unsqueeze(0).repeat(tgt_len, 1, 1, 1),
-             x.unsqueeze(1).repeat(1, src_len, 1, 1)), -1)
+        # Target x Source x Batch x Model_dim
+        x = self.input_layer(src_input, tgt_input)
+        # dropout should happen after we have the 2D representation
+        if not self.dropout_before:
+            x = F.dropout(x, p=self.dropout, training=self.training)
 
         inner_states = [x]
 
@@ -458,8 +470,8 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             x = self.layer_norm(x)
 
         # reduce the Source dim
-        # TODO: reduce after project_out_dim
-        x = self.reduce(x)
+        # TODO: output_layer after project_out_dim
+        x = self.output_layer(x)
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
@@ -489,6 +501,67 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         if self._future_mask.size(0) < dim:
             self._future_mask = torch.triu(utils.fill_with_neg_inf(self._future_mask.resize_(dim, dim)), 1)
         return self._future_mask[:dim, :dim]
+
+
+class ReformerInputLayer(nn.Module):
+    """
+    Decoder input layer, transforms two sequential inputs to a 2D representation
+    """
+
+    def __init__(self, args):
+        super().__init__()
+        # TODO: more ways to form 2D representation
+        self.input_layer = args.decoder_input_layer
+
+    def extra_repr(self):
+        return 'input_layer={}'.format(self.input_layer)
+
+    def forward(self, src_embed, tgt_embed):
+        x = None
+        src_len = src_embed.size(0)
+        tgt_len = tgt_embed.size(0)
+        if self.input_layer == 'cat':
+            x = torch.cat(
+                (src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1),
+                 tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)), -1)
+        elif self.input_layer == 'add':
+            # TODO: add additional scaling, similar to embed_scale
+            assert src_embed.size(-1) == tgt_embed.size(-1), \
+                f'source embedding dim ({src_embed.size(-1)}) must match target embedding dim({tgt_embed.size(-1)}) ' \
+                f'when using input layer {self.input_layer}'
+            x = src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1) \
+                + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)
+        return x
+
+
+class ReformerOutputLayer(nn.Module):
+    """
+    Decoder output layer, transforms a 2D representation to a single sequential output
+    """
+
+    def __init__(self, args):
+        super().__init__()
+        # TODO: more reduction functions
+        self.output_layer = args.decoder_output_layer
+        if 'norm' in self.output_layer:
+            self.layer_norm = LayerNorm(args.decoder_model_dim, not args.non_parametric_normalize)
+
+    def extra_repr(self):
+        return 'output_layer={},'.format(self.output_layer)
+
+    def forward(self, x):
+        # TODO: add layer_norm after reduction
+        # since reduction happens after layer_norm, additional layer_norm might be required after the
+        # reduction, especially for those reduction variants that does not preserve output scale
+        if 'max' in self.output_layer:
+            x = x.max(dim=1)[0]
+        elif 'min' in self.output_layer:
+            x = x.min(dim=1)[0]
+        elif 'mean' in self.output_layer:
+            x = x.mean(dim=1)
+        if 'norm' in self.output_layer:
+            x = self.layer_norm(x)
+        return x
 
 
 class ReformerDecoderLayer(nn.Module):
@@ -742,8 +815,14 @@ def base_architecture(args):
     args.share_all_embeddings = getattr(args, 'share_all_embeddings', False)
     args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
 
+    args.decoder_input_layer = getattr(args, 'decoder_input_layer', 'add')
+    args.dropout_before = getattr(args, 'dropout_before', False)
+    args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'max')
+
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
-    args.decoder_model_dim = getattr(args, 'decoder_model_dim', args.encoder_embed_dim + args.decoder_embed_dim)
+    args.decoder_model_dim = getattr(args, 'decoder_model_dim',
+                                     VALID_INPUT_LAYER[args.decoder_input_layer](
+                                         args.encoder_embed_dim, args.decoder_embed_dim))
     args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_model_dim)
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
@@ -763,7 +842,7 @@ def reformer_iwslt_de_en(args):
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 256)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 1024)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 4)
-    args.decoder_layers = getattr(args, 'decoder_layers', 2)
+    args.decoder_layers = getattr(args, 'decoder_layers', 7)
     base_architecture(args)
 
 
