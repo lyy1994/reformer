@@ -109,14 +109,10 @@ class ReformerModel(FairseqModel):
                             help='apply decoder self-attention before encoder self-attention')
         parser.add_argument('--encoder-ffn', action='store_true',
                             help='apply ffn after encoder self-attention')
-        parser.add_argument('--encoder-single-relu', action='store_true',
-                            help='apply relu if there is no ffn after encoder self-attention')
         parser.add_argument('--encoder-sublayers', type=int, metavar='N',
                             help='num encoder sublayers within one block')
         parser.add_argument('--decoder-ffn', action='store_true',
                             help='apply ffn after decoder self-attention')
-        parser.add_argument('--decoder-single-relu', action='store_true',
-                            help='apply relu if there is no ffn after decoder self-attention')
         parser.add_argument('--decoder-sublayers', type=int, metavar='N',
                             help='num decoder sublayers within one block')
 
@@ -550,7 +546,6 @@ class ReformerOutputLayer(nn.Module):
         return 'output_layer={},'.format(self.output_layer)
 
     def forward(self, x):
-        # TODO: add layer_norm after reduction
         # since reduction happens after layer_norm, additional layer_norm might be required after the
         # reduction, especially for those reduction variants that does not preserve output scale
         if 'max' in self.output_layer:
@@ -608,8 +603,6 @@ class ReformerDecoderLayer(nn.Module):
             # add ffn layer
             if getattr(args, f'{sublayer_type}_ffn'):
                 sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
-            elif getattr(args, f'{sublayer_type}_single_relu'):
-                sublayers.append(nn.ReLU())
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def forward(self, x, encoder_padding_mask, incremental_state,
@@ -829,10 +822,8 @@ def base_architecture(args):
     args.non_parametric_normalize = getattr(args, 'non_parametric_normalize', False)
     args.decoder_sublayer_before = getattr(args, 'decoder_sublayer_before', False)
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
-    args.encoder_single_relu = getattr(args, 'encoder_single_relu', False)
     args.encoder_sublayers = getattr(args, 'encoder_sublayers', 1)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
-    args.decoder_single_relu = getattr(args, 'decoder_single_relu', False)
     args.decoder_sublayers = getattr(args, 'decoder_sublayers', 1)
 
 
@@ -842,7 +833,7 @@ def reformer_iwslt_de_en(args):
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 256)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 1024)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 4)
-    args.decoder_layers = getattr(args, 'decoder_layers', 7)
+    args.decoder_layers = getattr(args, 'decoder_layers', 6)
     base_architecture(args)
 
 
