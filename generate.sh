@@ -20,13 +20,13 @@ data_dir=../data/data-bin
 datatype=test
 
 ######## parameters (default) ########
-batch_size=16
+batch_size=4
 beam_size=5
 lenpen=1
 # if use ensemble, set it
 ensemble=
 # dynamic options, e.g. change some default settings, '--quiet'
-other_options="--quiet --remove-bpe"
+other_options="--quiet --remove-bpe --model-parallelism"
 
 ######## models (default) ########
 # must exist
@@ -40,7 +40,7 @@ log_file=generate.log
 # evaluation or just decoding
 is_eval=0
 # now available for multi-bleu.perl only
-eval_tool=../utils/scripts/multi-bleu.perl
+eval_tool=../toolkit/multi-bleu.perl
 
 ######## args (reset default) ########
 # use args to reset default settings

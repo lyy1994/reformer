@@ -28,7 +28,8 @@ from . import (
 
 VALID_INPUT_LAYER = {'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
                      'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim}
-VALID_OUTPUT_LAYER = ['max', 'min', 'mean', 'max-norm', 'min-norm', 'mean-norm']
+VALID_OUTPUT_LAYER = ['max', 'min', 'mean', 'softmax', 'sum-norm']
+VALID_FLOW = ['sequential', 'parallel_add']
 
 
 MODULE_DEVICE = collections.defaultdict(lambda: None)
@@ -99,6 +100,10 @@ class ReformerModel(FairseqModel):
                             help='the method chosen to produce the 2D input')
         parser.add_argument('--decoder-output-layer', choices=VALID_OUTPUT_LAYER,
                             help='the method chosen to produce the 1D output')
+        parser.add_argument('--flow', choices=VALID_FLOW,
+                            help='the type of information flow for self-attention')
+        parser.add_argument('--summary-ffn', action='store_true',
+                            help='add a ffn to the end of a decoder layer (only for parallel flow)')
         parser.add_argument('--dropout-before', action='store_true',
                             help='apply dropout to embeddings before the input layer')
         parser.add_argument('--src-tgt-embed', action='store_true',
@@ -173,9 +178,7 @@ class ReformerModel(FairseqModel):
         else:
             # we first put all parameters and buffers to a single GPU
             model.cuda()
-            encoder_sublayers = args.encoder_sublayers if not args.encoder_ffn else args.encoder_sublayers + 1
-            decoder_sublayers = args.decoder_sublayers if not args.decoder_ffn else args.decoder_sublayers + 1
-            nsublayers = args.decoder_layers * (encoder_sublayers + decoder_sublayers)
+            nsublayers = INCREMENTAL_MODULE_INSTANCE_ID[ReformerDecoderSubLayer.__name__]
             # starting from N implies making extra N sublayers space for embeddings and softmax in the first device
             sublayer_id = args.pseudo_sublayers
             sublayers_per_device = math.ceil((nsublayers + sublayer_id) / args.model_parallelism_world_size)
@@ -554,6 +557,10 @@ class ReformerOutputLayer(nn.Module):
             x = x.min(dim=1)[0]
         elif 'mean' in self.output_layer:
             x = x.mean(dim=1)
+        elif 'sum' in self.output_layer:
+            x = x.sum(dim=1)
+        elif 'softmax' in self.output_layer:
+            x = torch.sum(F.softmax(x, dim=1) * x, dim=1)[0]
         if 'norm' in self.output_layer:
             x = self.layer_norm(x)
         return x
@@ -579,6 +586,7 @@ class ReformerDecoderLayer(nn.Module):
     def __init__(self, args, no_encoder_attn=False):
         super().__init__()
         self.no_encoder_attn = no_encoder_attn
+        self.flow = args.flow
         self.decoder_sublayer_before = args.decoder_sublayer_before
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
@@ -586,6 +594,7 @@ class ReformerDecoderLayer(nn.Module):
         if not self.no_encoder_attn:
             self.declare('encoder', args)
         self.maybe_declare('decoder', args, after=True)
+        self.summary_ffn = ReformerDecoderSubLayer(args, is_ffn=True) if args.summary_ffn else None
 
     def maybe_declare(self, sublayer_type, args, before=False, after=False):
         assert before ^ after
@@ -605,6 +614,9 @@ class ReformerDecoderLayer(nn.Module):
                 sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
+    def extra_repr(self):
+        return 'flow={},'.format(self.flow)
+
     def forward(self, x, encoder_padding_mask, incremental_state,
                 self_attn_mask=None, self_attn_padding_mask=None):
         """
@@ -616,6 +628,24 @@ class ReformerDecoderLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
+        return getattr(self, self.flow)(x, encoder_padding_mask, incremental_state,
+                                        self_attn_mask, self_attn_padding_mask)
+
+    def parallel_add(self, x, encoder_padding_mask, incremental_state,
+                           self_attn_mask=None, self_attn_padding_mask=None):
+        dec_out, dec_attn = self.run('decoder', x, encoder_padding_mask, incremental_state,
+                                     self_attn_mask=self_attn_mask,
+                                     self_attn_padding_mask=self_attn_padding_mask)
+        enc_out, enc_attn = self.run('encoder', x, encoder_padding_mask, incremental_state,
+                                     self_attn_mask=self_attn_mask,
+                                     self_attn_padding_mask=self_attn_padding_mask)
+        out = dec_out + enc_out
+        if self.summary_ffn is not None:
+            out, _ = self.summary_ffn(out, None, None)
+        return out, enc_attn
+
+    def sequential(self, x, encoder_padding_mask, incremental_state,
+                   self_attn_mask=None, self_attn_padding_mask=None):
         x, dec_attn = self.maybe_run('decoder', x, encoder_padding_mask, incremental_state,
                                      self_attn_mask, self_attn_padding_mask, before=True)
 
@@ -811,6 +841,8 @@ def base_architecture(args):
     args.decoder_input_layer = getattr(args, 'decoder_input_layer', 'add')
     args.dropout_before = getattr(args, 'dropout_before', False)
     args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'max')
+    args.flow = getattr(args, 'flow', 'sequential')
+    args.summary_ffn = getattr(args, 'summary_ffn', False)
 
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
     args.decoder_model_dim = getattr(args, 'decoder_model_dim',
