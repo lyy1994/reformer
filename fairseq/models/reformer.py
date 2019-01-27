@@ -639,7 +639,7 @@ class ReformerDecoderLayer(nn.Module):
         enc_out, enc_attn = self.run('encoder', x, encoder_padding_mask, incremental_state,
                                      self_attn_mask=self_attn_mask,
                                      self_attn_padding_mask=self_attn_padding_mask)
-        out = dec_out + enc_out
+        out = dec_out.to(enc_out.device) + enc_out
         if self.summary_ffn is not None:
             out, _ = self.summary_ffn(out, None, None)
         return out, enc_attn

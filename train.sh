@@ -3,7 +3,7 @@ set -e
 
 ######## hardware ########
 # devices
-devices=0,1
+devices=4,5,6,7
 
 ######## dataset ########
 # language: zh-en or en-zh
@@ -25,7 +25,7 @@ other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_e256_m256_l7_add_maxnorm_dropb_normb_decb_encffn_dropout0
+tag=reformer_e256_m256_l6_add_max_dropb_decb_encffn_decffn_dropout0
 
 
 
@@ -69,12 +69,13 @@ $data_dir/$dataset
 --decoder-embed-dim 256
 --decoder-ffn-embed-dim 1024
 --decoder-attention-heads 4
---decoder-layers 7
---decoder-normalize-before
+--flow sequential
+--decoder-layers 6
 --decoder-sublayer-before
 --encoder-ffn
+--decoder-ffn
 --decoder-input-layer add
---decoder-output-layer max-norm
+--decoder-output-layer max
 --dropout-before
 --dropout 0
 
