@@ -26,8 +26,11 @@ from . import (
 )
 
 
-VALID_INPUT_LAYER = {'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
-                     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim}
+VALID_INPUT_LAYER = {
+    'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
+    'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
+    'avg': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
+}
 VALID_OUTPUT_LAYER = ['max', 'min', 'mean', 'softmax', 'sum-norm']
 VALID_FLOW = ['sequential', 'parallel_add']
 
@@ -524,12 +527,18 @@ class ReformerInputLayer(nn.Module):
                 (src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1),
                  tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)), -1)
         elif self.input_layer == 'add':
-            # TODO: add additional scaling, similar to embed_scale
             assert src_embed.size(-1) == tgt_embed.size(-1), \
                 f'source embedding dim ({src_embed.size(-1)}) must match target embedding dim({tgt_embed.size(-1)}) ' \
                 f'when using input layer {self.input_layer}'
             x = src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1) \
                 + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)
+        elif self.input_layer == 'avg':
+            # TODO: add trainable scaling factor
+            assert src_embed.size(-1) == tgt_embed.size(-1), \
+                f'source embedding dim ({src_embed.size(-1)}) must match target embedding dim({tgt_embed.size(-1)}) ' \
+                f'when using input layer {self.input_layer}'
+            x = (src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1)
+                 + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)) / 2.
         return x
 
 
@@ -542,7 +551,7 @@ class ReformerOutputLayer(nn.Module):
         super().__init__()
         # TODO: more reduction functions
         self.output_layer = args.decoder_output_layer
-        if 'norm' in self.output_layer:
+        if self.output_layer == 'sum-norm':
             self.layer_norm = LayerNorm(args.decoder_model_dim, not args.non_parametric_normalize)
 
     def extra_repr(self):
@@ -551,18 +560,17 @@ class ReformerOutputLayer(nn.Module):
     def forward(self, x):
         # since reduction happens after layer_norm, additional layer_norm might be required after the
         # reduction, especially for those reduction variants that does not preserve output scale
-        if 'max' in self.output_layer:
+        if self.output_layer == 'max':
             x = x.max(dim=1)[0]
-        elif 'min' in self.output_layer:
+        elif self.output_layer == 'min':
             x = x.min(dim=1)[0]
-        elif 'mean' in self.output_layer:
+        elif self.output_layer == 'mean':
             x = x.mean(dim=1)
-        elif 'sum' in self.output_layer:
+        elif self.output_layer == 'sum-norm':
             x = x.sum(dim=1)
-        elif 'softmax' in self.output_layer:
-            x = torch.sum(F.softmax(x, dim=1) * x, dim=1)[0]
-        if 'norm' in self.output_layer:
             x = self.layer_norm(x)
+        elif self.output_layer == 'softmax':
+            x = torch.sum(F.softmax(x, dim=1) * x, dim=1)
         return x
 
 
