@@ -3,7 +3,7 @@ set -e
 
 ######## hardware (default) ########
 # devices (-1 for cpu)
-devices=0,1
+devices=3,4,5,6,7
 
 ######## dataset (default) ########
 # language: zh-en or en-zh
@@ -30,7 +30,7 @@ other_options="--quiet --remove-bpe --model-parallelism"
 
 ######## models (default) ########
 # must exist
-tag=reformer_d256_l4_normb
+tag=reformer_e256_m256_l10_avg_max_dropb_normb_decb_encffn_dropout0_decay0_opt
 # used for specific model file
 model_file=checkpoint_best.pt
 # used to specify log name

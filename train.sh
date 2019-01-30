@@ -3,7 +3,7 @@ set -e
 
 ######## hardware ########
 # devices
-devices=4,5,6,7
+devices=3,4,5,6,7
 
 ######## dataset ########
 # language: zh-en or en-zh
@@ -25,7 +25,7 @@ other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_e256_m256_l6_add_max_dropb_decb_encffn_decffn_dropout0
+tag=reformer_e256_m256_l10_avg_max_dropb_normb_decb_encffn_dropout0_decay0_opt
 
 
 
@@ -57,7 +57,7 @@ if [ ! -d "$data_dir/$dataset" ]; then
   --destdir ${data_dir}/${dataset}
 fi
 
-adam_betas="'(0.9, 0.98)'"
+adam_betas="'(0.9, 0.997)'"
 
 cmd="python3 -u train.py
 $data_dir/$dataset
@@ -69,13 +69,14 @@ $data_dir/$dataset
 --decoder-embed-dim 256
 --decoder-ffn-embed-dim 1024
 --decoder-attention-heads 4
---flow sequential
---decoder-layers 6
---decoder-sublayer-before
---encoder-ffn
---decoder-ffn
 --decoder-input-layer add
 --decoder-output-layer max
+--flow sequential
+--scaling mean
+--decoder-normalize-before
+--decoder-layers 10
+--decoder-sublayer-before
+--encoder-ffn
 --dropout-before
 --dropout 0
 
@@ -92,13 +93,13 @@ $data_dir/$dataset
 
 --criterion label_smoothed_cross_entropy
 --label-smoothing 0.1
---weight-decay 0.0001
+--weight-decay 0
 
 --lr-scheduler inverse_sqrt
---warmup-updates 4000
+--warmup-updates 8000
 --warmup-init-lr 1e-07
 --min-lr 1e-09
---lr 0.0005
+--lr 0.001
 
 --save-dir $output_dir
 

@@ -26,13 +26,17 @@ from . import (
 )
 
 
+VALID_SCALING = {
+    'null': lambda dim: 1.,
+    'mean': lambda dim: 1. / dim,
+    'sqrt': lambda dim: torch.sqrt(1. / torch.tensor(dim)),
+}
 VALID_INPUT_LAYER = {
     'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
-    'avg': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
 }
-VALID_OUTPUT_LAYER = ['max', 'min', 'mean', 'softmax', 'sum-norm']
-VALID_FLOW = ['sequential', 'parallel_add']
+VALID_OUTPUT_LAYER = ['max']
+VALID_FLOW = ['sequential', 'parallel']
 
 
 MODULE_DEVICE = collections.defaultdict(lambda: None)
@@ -99,6 +103,8 @@ class ReformerModel(FairseqModel):
         parser.add_argument('--adaptive-softmax-dropout', type=float, metavar='D',
                             help='sets adaptive softmax dropout for the tail projections')
 
+        parser.add_argument('--scaling', choices=VALID_SCALING.keys(),
+                            help='the method chosen to scale the adding output')
         parser.add_argument('--decoder-input-layer', choices=VALID_INPUT_LAYER.keys(),
                             help='the method chosen to produce the 2D input')
         parser.add_argument('--decoder-output-layer', choices=VALID_OUTPUT_LAYER,
@@ -447,7 +453,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             src_input = F.dropout(src_input, p=self.dropout, training=self.training)
             tgt_input = F.dropout(tgt_input, p=self.dropout, training=self.training)
         # form a source-target 2D representation
-        # Target x Source x Batch x Model_dim
+        # T x B x C -> T x S x B x C
         x = self.input_layer(src_input, tgt_input)
         # dropout should happen after we have the 2D representation
         if not self.dropout_before:
@@ -471,9 +477,9 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         if self.normalize:
             x = self.layer_norm(x)
 
-        # reduce the Source dim
+        # T x S x B x C -> T x B x C
         # TODO: output_layer after project_out_dim
-        x = self.output_layer(x)
+        x = self.output_layer(x, encoder_out['encoder_padding_mask'] if encoder_out is not None else None)
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
@@ -514,9 +520,10 @@ class ReformerInputLayer(nn.Module):
         super().__init__()
         # TODO: more ways to form 2D representation
         self.input_layer = args.decoder_input_layer
+        self.scaling = VALID_SCALING[args.scaling](2.)
 
     def extra_repr(self):
-        return 'input_layer={}'.format(self.input_layer)
+        return 'input_layer={}, scaling={}'.format(self.input_layer, self.scaling)
 
     def forward(self, src_embed, tgt_embed):
         x = None
@@ -531,14 +538,7 @@ class ReformerInputLayer(nn.Module):
                 f'source embedding dim ({src_embed.size(-1)}) must match target embedding dim({tgt_embed.size(-1)}) ' \
                 f'when using input layer {self.input_layer}'
             x = src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1) \
-                + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)
-        elif self.input_layer == 'avg':
-            # TODO: add trainable scaling factor
-            assert src_embed.size(-1) == tgt_embed.size(-1), \
-                f'source embedding dim ({src_embed.size(-1)}) must match target embedding dim({tgt_embed.size(-1)}) ' \
-                f'when using input layer {self.input_layer}'
-            x = (src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1)
-                 + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)) / 2.
+                + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1) * self.scaling
         return x
 
 
@@ -551,26 +551,23 @@ class ReformerOutputLayer(nn.Module):
         super().__init__()
         # TODO: more reduction functions
         self.output_layer = args.decoder_output_layer
-        if self.output_layer == 'sum-norm':
-            self.layer_norm = LayerNorm(args.decoder_model_dim, not args.non_parametric_normalize)
 
     def extra_repr(self):
         return 'output_layer={},'.format(self.output_layer)
 
-    def forward(self, x):
+    def forward(self, x, encoder_padding_mask):
+        # since we reduce the source dim, encoder_padding_mask should be taken into account
+        if encoder_padding_mask is None:
+            # B x S
+            encoder_padding_mask = x.new_zeros(x.size(2), x.size(1)).byte()
         # since reduction happens after layer_norm, additional layer_norm might be required after the
         # reduction, especially for those reduction variants that does not preserve output scale
         if self.output_layer == 'max':
-            x = x.max(dim=1)[0]
-        elif self.output_layer == 'min':
-            x = x.min(dim=1)[0]
-        elif self.output_layer == 'mean':
-            x = x.mean(dim=1)
-        elif self.output_layer == 'sum-norm':
-            x = x.sum(dim=1)
-            x = self.layer_norm(x)
-        elif self.output_layer == 'softmax':
-            x = torch.sum(F.softmax(x, dim=1) * x, dim=1)
+            # T x S x B x C
+            x = x.masked_fill(
+                encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
+                float('-inf'),
+            ).max(dim=1)[0]
         return x
 
 
@@ -596,6 +593,7 @@ class ReformerDecoderLayer(nn.Module):
         self.no_encoder_attn = no_encoder_attn
         self.flow = args.flow
         self.decoder_sublayer_before = args.decoder_sublayer_before
+        self.scaling = VALID_SCALING[args.scaling](2.)
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
         self.maybe_declare('decoder', args, before=True)
@@ -623,7 +621,7 @@ class ReformerDecoderLayer(nn.Module):
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def extra_repr(self):
-        return 'flow={},'.format(self.flow)
+        return 'flow={}, scaling={},'.format(self.flow, self.scaling)
 
     def forward(self, x, encoder_padding_mask, incremental_state,
                 self_attn_mask=None, self_attn_padding_mask=None):
@@ -639,15 +637,15 @@ class ReformerDecoderLayer(nn.Module):
         return getattr(self, self.flow)(x, encoder_padding_mask, incremental_state,
                                         self_attn_mask, self_attn_padding_mask)
 
-    def parallel_add(self, x, encoder_padding_mask, incremental_state,
-                           self_attn_mask=None, self_attn_padding_mask=None):
+    def parallel(self, x, encoder_padding_mask, incremental_state,
+                 self_attn_mask=None, self_attn_padding_mask=None):
         dec_out, dec_attn = self.run('decoder', x, encoder_padding_mask, incremental_state,
                                      self_attn_mask=self_attn_mask,
                                      self_attn_padding_mask=self_attn_padding_mask)
         enc_out, enc_attn = self.run('encoder', x, encoder_padding_mask, incremental_state,
                                      self_attn_mask=self_attn_mask,
                                      self_attn_padding_mask=self_attn_padding_mask)
-        out = dec_out.to(enc_out.device) + enc_out
+        out = (dec_out.to(enc_out.device) + enc_out) * self.scaling
         if self.summary_ffn is not None:
             out, _ = self.summary_ffn(out, None, None)
         return out, enc_attn
@@ -846,6 +844,7 @@ def base_architecture(args):
     args.share_all_embeddings = getattr(args, 'share_all_embeddings', False)
     args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
 
+    args.scaling = getattr(args, 'scaling', 'null')
     args.decoder_input_layer = getattr(args, 'decoder_input_layer', 'add')
     args.dropout_before = getattr(args, 'dropout_before', False)
     args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'max')
