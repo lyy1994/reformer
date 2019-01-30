@@ -27,8 +27,8 @@ from . import (
 
 
 VALID_SCALING = {
-    'null': lambda dim: 1.,
-    'mean': lambda dim: 1. / dim,
+    'null': lambda dim: torch.tensor(1.),
+    'mean': lambda dim: torch.tensor(1. / dim),
     'sqrt': lambda dim: torch.sqrt(1. / torch.tensor(dim)),
 }
 VALID_INPUT_LAYER = {
@@ -538,7 +538,7 @@ class ReformerInputLayer(nn.Module):
                 f'source embedding dim ({src_embed.size(-1)}) must match target embedding dim({tgt_embed.size(-1)}) ' \
                 f'when using input layer {self.input_layer}'
             x = src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1) \
-                + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1) * self.scaling
+                + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1) * self.scaling.to(src_embed.device)
         return x
 
 
@@ -645,7 +645,7 @@ class ReformerDecoderLayer(nn.Module):
         enc_out, enc_attn = self.run('encoder', x, encoder_padding_mask, incremental_state,
                                      self_attn_mask=self_attn_mask,
                                      self_attn_padding_mask=self_attn_padding_mask)
-        out = (dec_out.to(enc_out.device) + enc_out) * self.scaling
+        out = (dec_out.to(enc_out.device) + enc_out) * self.scaling.to(enc_out.device)
         if self.summary_ffn is not None:
             out, _ = self.summary_ffn(out, None, None)
         return out, enc_attn
