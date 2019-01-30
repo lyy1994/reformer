@@ -77,7 +77,6 @@ class MultiheadAttention2D(nn.Module):
         :param incremental_state:
         :param need_weights:
         :param attn_mask: Output x Input, required only reduce_tgt=True
-        otherwise output_layer Source dim (encoder self-attention).
         :return:
         """
         # since data_ptr() is used to detect whether q, k, v are the same be
