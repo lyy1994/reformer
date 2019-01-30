@@ -171,10 +171,7 @@ class MultiheadAttention2D(nn.Module):
         if key_padding_mask is not None:
             # don't attend to padding symbols
             attn_weights = attn_weights.view(src_size, true_bsz, self.num_heads, out_len, in_len)
-            if self.tgt_attn:
-                key_padding_mask = key_padding_mask.transpose(0, 1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            else:
-                key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(2).unsqueeze(0)
+            key_padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(2).unsqueeze(0)
             attn_weights = attn_weights.float().masked_fill(
                 key_padding_mask,
                 float('-inf'),
