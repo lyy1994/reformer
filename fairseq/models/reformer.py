@@ -123,12 +123,10 @@ class ReformerModel(FairseqModel):
                             help='apply decoder self-attention before encoder self-attention')
         parser.add_argument('--encoder-ffn', action='store_true',
                             help='apply ffn after encoder self-attention')
-        parser.add_argument('--encoder-sublayers', type=int, metavar='N',
-                            help='num encoder sublayers within one block')
         parser.add_argument('--decoder-ffn', action='store_true',
                             help='apply ffn after decoder self-attention')
-        parser.add_argument('--decoder-sublayers', type=int, metavar='N',
-                            help='num decoder sublayers within one block')
+        parser.add_argument('--extra-encattn', action='store_true',
+                            help='apply an additional encoder self-attention at the end of the layer block')
 
     @classmethod
     def build_model(cls, args, task):
@@ -601,6 +599,9 @@ class ReformerDecoderLayer(nn.Module):
             self.declare('encoder', args)
         self.maybe_declare('decoder', args, after=True)
         self.summary_ffn = ReformerDecoderSubLayer(args, is_ffn=True) if args.summary_ffn else None
+        self.extra_encattn = nn.ModuleList([
+            ReformerDecoderSubLayer(args, decoder_attn=False, is_ffn=False),
+            ReformerDecoderSubLayer(args, decoder_attn=False, is_ffn=True)]) if args.extra_encattn else None
 
     def maybe_declare(self, sublayer_type, args, before=False, after=False):
         assert before ^ after
@@ -610,14 +611,12 @@ class ReformerDecoderLayer(nn.Module):
     def declare(self, sublayer_type, args):
         assert sublayer_type in ['encoder', 'decoder']
         decoder_attn = True if sublayer_type == 'decoder' else False
-        nsublayers = getattr(args, f'{sublayer_type}_sublayers')
         sublayers = nn.ModuleList([])
-        for _ in range(nsublayers):
-            # add self-attention layer
-            sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=False))
-            # add ffn layer
-            if getattr(args, f'{sublayer_type}_ffn'):
-                sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
+        # add self-attention layer
+        sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=False))
+        # add ffn layer
+        if getattr(args, f'{sublayer_type}_ffn'):
+            sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def extra_repr(self):
@@ -634,8 +633,14 @@ class ReformerDecoderLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
-        return getattr(self, self.flow)(x, encoder_padding_mask, incremental_state,
-                                        self_attn_mask, self_attn_padding_mask)
+        x, attn = getattr(self, self.flow)(x, encoder_padding_mask, incremental_state,
+                                           self_attn_mask, self_attn_padding_mask)
+        if self.extra_encattn is not None:
+            for layer in self.extra_encattn:
+                x, attn = layer(x, encoder_padding_mask, incremental_state,
+                                self_attn_mask=self_attn_mask,
+                                self_attn_padding_mask=self_attn_padding_mask)
+        return x, attn
 
     def parallel(self, x, encoder_padding_mask, incremental_state,
                  self_attn_mask=None, self_attn_padding_mask=None):
@@ -850,6 +855,7 @@ def base_architecture(args):
     args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'max')
     args.flow = getattr(args, 'flow', 'sequential')
     args.summary_ffn = getattr(args, 'summary_ffn', False)
+    args.extra_encattn = getattr(args, 'extra_encattn', False)
 
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
     args.decoder_model_dim = getattr(args, 'decoder_model_dim',
@@ -861,9 +867,7 @@ def base_architecture(args):
     args.non_parametric_normalize = getattr(args, 'non_parametric_normalize', False)
     args.decoder_sublayer_before = getattr(args, 'decoder_sublayer_before', False)
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
-    args.encoder_sublayers = getattr(args, 'encoder_sublayers', 1)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
-    args.decoder_sublayers = getattr(args, 'decoder_sublayers', 1)
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
