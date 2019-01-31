@@ -35,7 +35,7 @@ VALID_INPUT_LAYER = {
     'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
 }
-VALID_OUTPUT_LAYER = ['max', 'attn']
+VALID_OUTPUT_LAYER = ['max', 'attn', 'scaled_attn']
 VALID_FLOW = ['sequential', 'parallel']
 
 
@@ -549,9 +549,10 @@ class ReformerOutputLayer(nn.Module):
         super().__init__()
         # TODO: more reduction functions
         self.output_layer = args.decoder_output_layer
-        if self.output_layer == 'attn':
+        if self.output_layer == 'attn' or self.output_layer == 'scaled_attn':
             self.weights = nn.Parameter(torch.Tensor(args.decoder_model_dim, args.decoder_model_dim))
             nn.init.normal_(self.weights, mean=0, std=args.decoder_model_dim ** -0.5)
+            self.scaling = args.decoder_model_dim ** -0.5
 
     def extra_repr(self):
         return 'output_layer={},'.format(self.output_layer)
@@ -572,6 +573,17 @@ class ReformerOutputLayer(nn.Module):
         elif self.output_layer == 'attn':
             # T x S x B x C
             weights = F.linear(x, self.weights)
+            # B x S
+            weights = weights.masked_fill(
+                encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
+                float('-inf'),
+            )
+            prob = F.softmax(weights, dim=1)
+            assert torch.isnan(prob).byte().any() == 0
+            x = torch.sum(prob * x, dim=1)
+        elif self.output_layer == 'scaled_attn':
+            # T x S x B x C
+            weights = F.linear(x * self.scaling, self.weights)
             # B x S
             weights = weights.masked_fill(
                 encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
