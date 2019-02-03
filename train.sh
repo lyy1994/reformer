@@ -19,13 +19,13 @@ model=reformer
 # which hparams 
 param=${model}"_iwslt_"${s}"_"${t}
 # defualt is 103k. About 10 epochs for 700w CWMT
-max_update=20000
+max_update=30000
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
 other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_e256_m256_l10_avg_max_dropb_normb_decb_encffn_dropout0_decay0_opt
+tag=reformer_e256_m256_l10_avg_max_dropb_normb_decb_encffn_dropout01_decay0_opt
 
 
 
@@ -78,7 +78,7 @@ $data_dir/$dataset
 --decoder-sublayer-before
 --encoder-ffn
 --dropout-before
---dropout 0
+--dropout 0.1
 
 --distributed-world-size 1
 --model-parallelism
