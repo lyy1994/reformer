@@ -108,3 +108,6 @@ fairseq/temporal_convolution_tbc
 
 # Pycharm
 .idea
+
+# VSCode
+.vscode
