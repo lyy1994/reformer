@@ -35,7 +35,7 @@ VALID_INPUT_LAYER = {
     'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
 }
-VALID_OUTPUT_LAYER = ['max', 'attn', 'scaled_attn']
+VALID_OUTPUT_LAYER = ['max', 'attn', 'scaled_attn', 'normed_vattn']
 VALID_FLOW = ['sequential', 'parallel']
 
 
@@ -553,6 +553,13 @@ class ReformerOutputLayer(nn.Module):
             self.weights = nn.Parameter(torch.Tensor(args.decoder_model_dim, args.decoder_model_dim))
             nn.init.normal_(self.weights, mean=0, std=args.decoder_model_dim ** -0.5)
             self.scaling = args.decoder_model_dim ** -0.5
+        elif self.output_layer == 'normed_vattn':
+            # this is inspired from https://tensorflow.google.cn/api_docs/python/tf/contrib/seq2seq/BahdanauAttention
+            self.v = nn.Parameter(torch.Tensor(args.decoder_model_dim))
+            nn.init.normal_(self.v, mean=0, std=args.decoder_model_dim ** -0.5)
+            self.g = nn.Parameter(torch.tensor(0.))
+            nn.init.normal_(self.g, mean=0, std=args.decoder_model_dim ** -0.5)
+            self.linear = Linear(args.decoder_model_dim, args.decoder_model_dim)
 
     def extra_repr(self):
         return 'output_layer={},'.format(self.output_layer)
@@ -589,6 +596,18 @@ class ReformerOutputLayer(nn.Module):
                 encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
                 float('-inf'),
             )
+            prob = F.softmax(weights, dim=1)
+            assert torch.isnan(prob).byte().any() == 0
+            x = torch.sum(prob * x, dim=1)
+        elif self.output_layer == 'normed_vattn':
+            # T x S x B
+            norm_v = self.g * self.v * torch.rsqrt(torch.sum(self.v ** 2))
+            weights = torch.sum(norm_v * F.tanh(self.linear(x)), dim=-1)
+            # B x S
+            weights = weights.masked_fill(
+                encoder_padding_mask.transpose(0, 1).unsqueeze(0),
+                float('-inf'),
+            ).unsqueeze(-1)
             prob = F.softmax(weights, dim=1)
             assert torch.isnan(prob).byte().any() == 0
             x = torch.sum(prob * x, dim=1)
