@@ -25,7 +25,7 @@ other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_e256_m256_l10_avg_max_dropb_normb_decb_encffn_dropout01_decay0_opt
+tag=reformer_e256_m256_l10_avg_attn_dropb_normb_decb_encffn_dropout01_attndrop01_decay0_opt
 
 
 
@@ -70,7 +70,7 @@ $data_dir/$dataset
 --decoder-ffn-embed-dim 1024
 --decoder-attention-heads 4
 --decoder-input-layer add
---decoder-output-layer max
+--decoder-output-layer attn
 --flow sequential
 --scaling mean
 --decoder-normalize-before
@@ -78,6 +78,8 @@ $data_dir/$dataset
 --decoder-sublayer-before
 --encoder-ffn
 --dropout-before
+--attention-dropout 0.1
+--relu-dropout 0
 --dropout 0.1
 
 --distributed-world-size 1
