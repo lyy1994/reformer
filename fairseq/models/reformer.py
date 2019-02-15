@@ -127,6 +127,8 @@ class ReformerModel(FairseqModel):
                             help='apply ffn after decoder self-attention')
         parser.add_argument('--extra-encattn', action='store_true',
                             help='apply an additional encoder self-attention at the end of the layer block')
+        parser.add_argument('--binorm', action='store_true',
+                            help='apply layer normalization at both the input and the output of the layer block')
 
     @classmethod
     def build_model(cls, args, task):
@@ -519,12 +521,19 @@ class ReformerInputLayer(nn.Module):
         # TODO: more ways to form 2D representation
         self.input_layer = args.decoder_input_layer
         self.scaling = VALID_SCALING[args.scaling](2.)
+        self.binorm = args.binorm
+        if self.binorm:
+            self.src_norm = LayerNorm(args.encoder_embed_dim, not args.non_parametric_normalize)
+            self.tgt_norm = LayerNorm(args.decoder_embed_dim, not args.non_parametric_normalize)
 
     def extra_repr(self):
         return 'input_layer={}, scaling={}'.format(self.input_layer, self.scaling)
 
     def forward(self, src_embed, tgt_embed):
         x = None
+        if self.binorm:
+            src_embed = self.src_norm(src_embed)
+            tgt_embed = self.tgt_norm(tgt_embed)
         src_len = src_embed.size(0)
         tgt_len = tgt_embed.size(0)
         if self.input_layer == 'cat':
@@ -780,6 +789,7 @@ class ReformerDecoderSubLayer(nn.Module):
         self.dropout = args.dropout
         self.relu_dropout = args.relu_dropout
         self.normalize_before = args.decoder_normalize_before
+        self.binorm = args.binorm
 
         if self.is_ffn:
             self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
@@ -792,7 +802,11 @@ class ReformerDecoderSubLayer(nn.Module):
             )
             self.need_attn = True
 
-        self.layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
+        if not self.binorm:
+            self.layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
+        else:
+            self.input_layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
+            self.output_layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
 
     @fetch_input
     def forward(self, x, encoder_padding_mask, incremental_state,
@@ -809,7 +823,10 @@ class ReformerDecoderSubLayer(nn.Module):
         attn = None
 
         residual = x
-        x = self.maybe_layer_norm(self.layer_norm, x, before=True)
+        if not self.binorm:
+            x = self.maybe_layer_norm(self.layer_norm, x, before=True)
+        else:
+            x = self.input_layer_norm(x)
         if self.is_ffn:
             x = F.relu(self.fc1(x))
             x = F.dropout(x, p=self.relu_dropout, training=self.training)
@@ -826,7 +843,10 @@ class ReformerDecoderSubLayer(nn.Module):
             )
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
-        x = self.maybe_layer_norm(self.layer_norm, x, after=True)
+        if not self.binorm:
+            x = self.maybe_layer_norm(self.layer_norm, x, after=True)
+        else:
+            x = self.output_layer_norm(x)
         return x, attn
 
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
@@ -913,6 +933,7 @@ def base_architecture(args):
     args.decoder_sublayer_before = getattr(args, 'decoder_sublayer_before', False)
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
+    args.binorm = getattr(args, 'binorm', False)
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
