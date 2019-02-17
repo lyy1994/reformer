@@ -35,7 +35,7 @@ VALID_INPUT_LAYER = {
     'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
 }
-VALID_OUTPUT_LAYER = ['max', 'attn', 'scaled_attn', 'normed_vattn']
+VALID_OUTPUT_LAYER = ['max', 'attn']
 VALID_FLOW = ['sequential', 'parallel']
 
 
@@ -558,6 +558,7 @@ class ReformerOutputLayer(nn.Module):
         super().__init__()
         # TODO: more reduction functions
         self.output_layer = args.decoder_output_layer
+        self.attention_dropout = args.attention_dropout
         if self.output_layer == 'attn' or self.output_layer == 'scaled_attn':
             self.weights = nn.Parameter(torch.Tensor(args.decoder_model_dim, args.decoder_model_dim))
             nn.init.normal_(self.weights, mean=0, std=args.decoder_model_dim ** -0.5)
@@ -595,29 +596,7 @@ class ReformerOutputLayer(nn.Module):
                 float('-inf'),
             )
             prob = F.softmax(weights, dim=1)
-            assert torch.isnan(prob).byte().any() == 0
-            x = torch.sum(prob * x, dim=1)
-        elif self.output_layer == 'scaled_attn':
-            # T x S x B x C
-            weights = F.linear(x * self.scaling, self.weights)
-            # B x S
-            weights = weights.masked_fill(
-                encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
-                float('-inf'),
-            )
-            prob = F.softmax(weights, dim=1)
-            assert torch.isnan(prob).byte().any() == 0
-            x = torch.sum(prob * x, dim=1)
-        elif self.output_layer == 'normed_vattn':
-            # T x S x B
-            norm_v = self.g * self.v * torch.rsqrt(torch.sum(self.v ** 2))
-            weights = torch.sum(norm_v * F.tanh(self.linear(x)), dim=-1)
-            # B x S
-            weights = weights.masked_fill(
-                encoder_padding_mask.transpose(0, 1).unsqueeze(0),
-                float('-inf'),
-            ).unsqueeze(-1)
-            prob = F.softmax(weights, dim=1)
+            prob = F.dropout(prob, p=self.attention_dropout, training=self.training)
             assert torch.isnan(prob).byte().any() == 0
             x = torch.sum(prob * x, dim=1)
         return x
