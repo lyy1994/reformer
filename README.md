@@ -15,7 +15,7 @@ This project intends to build a Seq2Seq model consisted of only decoder without 
 - to address the possible harm of homogeneity, model might need to make early prediction at lower layers
 
 # TODO
-- should we multiply `math.sqrt(0.5)` after residual add?
+- extra probability for output layer attention dropout and representation dropout
 - model underfits, some parameters are useless (too few non-linear)
 - apply ReLU after attention instead of itself form a sublayer
 - predict next word based on representations from all source positions instead of their maximum (information loss, GLU-style)
