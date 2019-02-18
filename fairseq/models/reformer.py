@@ -35,7 +35,6 @@ VALID_INPUT_LAYER = {
     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
 }
 VALID_OUTPUT_LAYER = ['max', 'attn']
-VALID_FLOW = ['sequential', 'parallel']
 
 MODULE_DEVICE = collections.defaultdict(lambda: None)
 
@@ -115,7 +114,7 @@ class ReformerModel(FairseqModel):
                             help='the method chosen to produce the 2D input')
         parser.add_argument('--decoder-output-layer', choices=VALID_OUTPUT_LAYER,
                             help='the method chosen to produce the 1D output')
-        parser.add_argument('--flow', choices=VALID_FLOW,
+        parser.add_argument('--flow', choices=VALID_FLOW.keys(),
                             help='the type of information flow for self-attention')
         parser.add_argument('--summary-ffn', action='store_true',
                             help='add a ffn to the end of a decoder layer (only for parallel flow)')
@@ -672,6 +671,17 @@ class ReformerOutputLayer(nn.Module):
         return x
 
 
+VALID_FLOW = {}
+
+
+def register_flow(name):
+    def register_flow_fn(fn):
+        VALID_FLOW[name] = fn
+        return fn
+
+    return register_flow_fn
+
+
 class ReformerDecoderLayer(nn.Module):
     """Decoder layer block.
 
@@ -740,10 +750,11 @@ class ReformerDecoderLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
-        x, attn = getattr(self, self.flow)(x, encoder_padding_mask, incremental_state,
-                                           self_attn_mask, self_attn_padding_mask)
+        x, attn = VALID_FLOW[self.flow](self, x, encoder_padding_mask, incremental_state,
+                                        self_attn_mask, self_attn_padding_mask)
         return x, attn
 
+    @register_flow('parallel')
     def parallel(self, x, encoder_padding_mask, incremental_state,
                  self_attn_mask=None, self_attn_padding_mask=None):
         dec_out, dec_attn = self.run('decoder', x, encoder_padding_mask, incremental_state,
@@ -757,6 +768,7 @@ class ReformerDecoderLayer(nn.Module):
             out, _ = self.summary_ffn(out, None, None)
         return out, enc_attn
 
+    @register_flow('sequential')
     def sequential(self, x, encoder_padding_mask, incremental_state,
                    self_attn_mask=None, self_attn_padding_mask=None):
         x, dec_attn = self.maybe_run('decoder', x, encoder_padding_mask, incremental_state,
