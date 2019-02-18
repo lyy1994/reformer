@@ -25,7 +25,6 @@ from . import (
     register_model_architecture,
 )
 
-
 VALID_SCALING = {
     'null': lambda dim: torch.tensor(1.),
     'mean': lambda dim: torch.tensor(1. / dim),
@@ -37,7 +36,6 @@ VALID_INPUT_LAYER = {
 }
 VALID_OUTPUT_LAYER = ['max', 'attn']
 VALID_FLOW = ['sequential', 'parallel']
-
 
 MODULE_DEVICE = collections.defaultdict(lambda: None)
 
@@ -312,19 +310,6 @@ class ReformerEncoder(FairseqEncoder):
         if self.embed_positions is None:
             return self.max_source_positions
         return min(self.max_source_positions, self.embed_positions.max_positions())
-
-    def upgrade_state_dict(self, state_dict):
-        """Upgrade a (possibly old) state dict for new versions of fairseq."""
-        if isinstance(self.embed_positions, SinusoidalPositionalEmbedding):
-            if 'encoder.embed_positions.weights' in state_dict:
-                del state_dict['encoder.embed_positions.weights']
-            state_dict['encoder.embed_positions._float_tensor'] = torch.FloatTensor(1)
-        if utils.item(state_dict.get('encoder.version', torch.Tensor([1]))[0]) < 2:
-            # earlier checkpoints did not normalize after the stack of layers
-            self.layer_norm = None
-            self.normalize = False
-            state_dict['encoder.version'] = torch.Tensor([1])
-        return state_dict
 
 
 class ReformerDecoder(FairseqIncrementalDecoder):
@@ -738,6 +723,7 @@ def register_module(init_fn):
             INCREMENTAL_MODULE_INSTANCE_ID[module_name] += 1
             self._id = INCREMENTAL_MODULE_INSTANCE_ID[module_name]
         return init_fn(self, *args, **kwargs)
+
     return register
 
 
@@ -750,6 +736,7 @@ def fetch_input(forward_fn):
                   if isinstance(value, torch.Tensor) and MODULE_DEVICE[self._id] is not None else value
                   for key, value in kwargs.items()}
         return forward_fn(self, *args, **kwargs)
+
     return _forward_fn
 
 
