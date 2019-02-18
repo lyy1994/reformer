@@ -602,6 +602,7 @@ class ReformerDecoderLayer(nn.Module):
         self.flow = args.flow
         self.decoder_sublayer_before = args.decoder_sublayer_before
         self.scaling = VALID_SCALING[args.scaling](2.)
+        self.extra_encattn = args.extra_encattn
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
         self.maybe_declare('decoder', args, before=True)
@@ -609,13 +610,11 @@ class ReformerDecoderLayer(nn.Module):
             self.declare('encoder', args)
         self.maybe_declare('decoder', args, after=True)
         self.summary_ffn = ReformerDecoderSubLayer(args, is_ffn=True) if args.summary_ffn else None
-        self.extra_encattn = nn.ModuleList([
-            ReformerDecoderSubLayer(args, decoder_attn=False, is_ffn=False),
-            ReformerDecoderSubLayer(args, decoder_attn=False, is_ffn=True)]) if args.extra_encattn else None
 
     def maybe_declare(self, sublayer_type, args, before=False, after=False):
         assert before ^ after
-        if after ^ getattr(self, f'{sublayer_type}_sublayer_before'):
+        assert sublayer_type == 'decoder'
+        if after ^ self.decoder_sublayer_before:
             self.declare(sublayer_type, args)
 
     def declare(self, sublayer_type, args):
@@ -624,6 +623,11 @@ class ReformerDecoderLayer(nn.Module):
         sublayers = nn.ModuleList([])
         # add self-attention layer
         sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=False))
+        if self.extra_encattn and sublayer_type == 'encoder':
+            # first add a ffn layer
+            sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
+            # then add a self-attention layer
+            sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=False))
         # add ffn layer
         if getattr(args, f'{sublayer_type}_ffn'):
             sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
@@ -645,11 +649,6 @@ class ReformerDecoderLayer(nn.Module):
         """
         x, attn = getattr(self, self.flow)(x, encoder_padding_mask, incremental_state,
                                            self_attn_mask, self_attn_padding_mask)
-        if self.extra_encattn is not None:
-            for layer in self.extra_encattn:
-                x, attn = layer(x, encoder_padding_mask, incremental_state,
-                                self_attn_mask=self_attn_mask,
-                                self_attn_padding_mask=self_attn_padding_mask)
         return x, attn
 
     def parallel(self, x, encoder_padding_mask, incremental_state,
@@ -684,8 +683,9 @@ class ReformerDecoderLayer(nn.Module):
     def maybe_run(self, sublayer_type, x, encoder_padding_mask, incremental_state, self_attn_mask,
                   self_attn_padding_mask, before=False, after=False):
         assert before ^ after
+        assert sublayer_type == 'decoder'
         attn = None
-        if after ^ getattr(self, f'{sublayer_type}_sublayer_before'):
+        if after ^ self.decoder_sublayer_before:
             x, attn = self.run(sublayer_type, x, encoder_padding_mask, incremental_state,
                                self_attn_mask=self_attn_mask,
                                self_attn_padding_mask=self_attn_padding_mask)
