@@ -544,17 +544,9 @@ class ReformerOutputLayer(nn.Module):
         # TODO: more reduction functions
         self.output_layer = args.decoder_output_layer
         self.attention_dropout = args.attention_dropout
-        if self.output_layer == 'attn' or self.output_layer == 'scaled_attn':
+        if self.output_layer == 'attn':
             self.weights = nn.Parameter(torch.Tensor(args.decoder_model_dim, args.decoder_model_dim))
             nn.init.normal_(self.weights, mean=0, std=args.decoder_model_dim ** -0.5)
-            self.scaling = args.decoder_model_dim ** -0.5
-        elif self.output_layer == 'normed_vattn':
-            # this is inspired from https://tensorflow.google.cn/api_docs/python/tf/contrib/seq2seq/BahdanauAttention
-            self.v = nn.Parameter(torch.Tensor(args.decoder_model_dim))
-            nn.init.normal_(self.v, mean=0, std=args.decoder_model_dim ** -0.5)
-            self.g = nn.Parameter(torch.tensor(0.))
-            nn.init.normal_(self.g, mean=0, std=args.decoder_model_dim ** -0.5)
-            self.linear = Linear(args.decoder_model_dim, args.decoder_model_dim)
 
     def extra_repr(self):
         return 'output_layer={},'.format(self.output_layer)
