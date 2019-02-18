@@ -17,7 +17,7 @@ from fairseq import utils
 
 from fairseq.modules import (
     AdaptiveSoftmax, LearnedPositionalEmbedding, MultiheadAttention2D,
-    SinusoidalPositionalEmbedding
+    MultiheadAttention, SinusoidalPositionalEmbedding
 )
 
 from . import (
@@ -74,6 +74,14 @@ class ReformerModel(FairseqModel):
                             help='path to pre-trained encoder embedding')
         parser.add_argument('--encoder-embed-dim', type=int, metavar='N',
                             help='encoder embedding dimension')
+        parser.add_argument('--encoder-ffn-embed-dim', type=int, metavar='N',
+                            help='encoder embedding dimension for FFN')
+        parser.add_argument('--encoder-layers', type=int, metavar='N',
+                            help='num encoder layers')
+        parser.add_argument('--encoder-attention-heads', type=int, metavar='N',
+                            help='num encoder attention heads')
+        parser.add_argument('--encoder-normalize-before', action='store_true',
+                            help='apply layernorm before each encoder block')
         parser.add_argument('--encoder-learned-pos', action='store_true',
                             help='use learned positional embeddings in the encoder')
         parser.add_argument('--decoder-embed-path', type=str, metavar='STR',
@@ -124,9 +132,11 @@ class ReformerModel(FairseqModel):
         parser.add_argument('--decoder-ffn', action='store_true',
                             help='apply ffn after decoder self-attention')
         parser.add_argument('--extra-encattn', action='store_true',
-                            help='apply an additional encoder self-attention at the end of the layer block')
+                            help='apply an additional encoder self-attention')
         parser.add_argument('--binorm', action='store_true',
                             help='apply layer normalization at both the input and the output of the layer block')
+        parser.add_argument('--transformer-encoder', action='store_true',
+                            help='apply the transformer encoder before the reformer decoder')
 
     @classmethod
     def build_model(cls, args, task):
@@ -186,7 +196,7 @@ class ReformerModel(FairseqModel):
             # we first put all parameters and buffers to a single GPU
             model.cuda()
             nsublayers = INCREMENTAL_MODULE_INSTANCE_ID[ReformerDecoderSubLayer.__name__]
-            # starting from N implies making extra N sublayers space for embeddings and softmax in the first device
+            # starting from N implies making extra N sublayers space in the first device (embeddings, softmax, encoder)
             sublayer_id = args.pseudo_sublayers
             sublayers_per_device = math.ceil((nsublayers + sublayer_id) / args.model_parallelism_world_size)
             names, devices = ['module name'], ['device']
@@ -251,6 +261,17 @@ class ReformerEncoder(FairseqEncoder):
 
         self.register_buffer('version', torch.Tensor([2]))
 
+        self.transformer_encoder = args.transformer_encoder
+        if self.transformer_encoder:
+            self.layers = nn.ModuleList([])
+            self.layers.extend([
+                TransformerEncoderLayer(args)
+                for i in range(args.encoder_layers)
+            ])
+            self.normalize = args.encoder_normalize_before
+            if self.normalize:
+                self.layer_norm = LayerNorm(embed_dim)
+
     def forward(self, src_tokens, src_lengths):
         """
         Args:
@@ -281,6 +302,14 @@ class ReformerEncoder(FairseqEncoder):
         if not encoder_padding_mask.any():
             encoder_padding_mask = None
 
+        if self.transformer_encoder:
+            # encoder layers
+            for layer in self.layers:
+                x = layer(x, encoder_padding_mask)
+
+            if self.normalize:
+                x = self.layer_norm(x)
+
         return {
             'encoder_out': x,  # T x B x C
             'encoder_padding_mask': encoder_padding_mask,  # B x T
@@ -310,6 +339,70 @@ class ReformerEncoder(FairseqEncoder):
         if self.embed_positions is None:
             return self.max_source_positions
         return min(self.max_source_positions, self.embed_positions.max_positions())
+
+
+class TransformerEncoderLayer(nn.Module):
+    """Encoder layer block.
+
+    In the original paper each operation (multi-head attention or FFN) is
+    postprocessed with: `dropout -> add residual -> layernorm`. In the
+    tensor2tensor code they suggest that learning is more robust when
+    preprocessing each layer with layernorm and postprocessing with:
+    `dropout -> add residual`. We default to the approach in the paper, but the
+    tensor2tensor approach can be enabled by setting
+    *args.encoder_normalize_before* to ``True``.
+
+    Args:
+        args (argparse.Namespace): parsed command-line arguments
+    """
+
+    def __init__(self, args):
+        super().__init__()
+        self.embed_dim = args.encoder_embed_dim
+        self.self_attn = MultiheadAttention(
+            self.embed_dim, args.encoder_attention_heads,
+            dropout=args.attention_dropout,
+        )
+        self.dropout = args.dropout
+        self.relu_dropout = args.relu_dropout
+        self.normalize_before = args.encoder_normalize_before
+        self.fc1 = Linear(self.embed_dim, args.encoder_ffn_embed_dim)
+        self.fc2 = Linear(args.encoder_ffn_embed_dim, self.embed_dim)
+        self.layer_norms = nn.ModuleList([LayerNorm(self.embed_dim) for i in range(2)])
+
+    def forward(self, x, encoder_padding_mask):
+        """
+        Args:
+            x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
+            encoder_padding_mask (ByteTensor): binary ByteTensor of shape
+                `(batch, src_len)` where padding elements are indicated by ``1``.
+
+        Returns:
+            encoded output of shape `(batch, src_len, embed_dim)`
+        """
+        residual = x
+        x = self.maybe_layer_norm(0, x, before=True)
+        x, _ = self.self_attn(query=x, key=x, value=x, key_padding_mask=encoder_padding_mask)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = residual + x
+        x = self.maybe_layer_norm(0, x, after=True)
+
+        residual = x
+        x = self.maybe_layer_norm(1, x, before=True)
+        x = F.relu(self.fc1(x))
+        x = F.dropout(x, p=self.relu_dropout, training=self.training)
+        x = self.fc2(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = residual + x
+        x = self.maybe_layer_norm(1, x, after=True)
+        return x
+
+    def maybe_layer_norm(self, i, x, before=False, after=False):
+        assert before ^ after
+        if after ^ self.normalize_before:
+            return self.layer_norms[i](x)
+        else:
+            return x
 
 
 class ReformerDecoder(FairseqIncrementalDecoder):
@@ -855,10 +948,14 @@ def PositionalEmbedding(num_embeddings, embedding_dim, padding_idx, left_pad, le
 def base_architecture(args):
     args.encoder_embed_path = getattr(args, 'encoder_embed_path', None)
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 512)
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 2048)
+    args.encoder_layers = getattr(args, 'encoder_layers', 6)
+    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 8)
+    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', False)
     args.encoder_learned_pos = getattr(args, 'encoder_learned_pos', False)
     args.decoder_embed_path = getattr(args, 'decoder_embed_path', None)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', args.encoder_embed_dim)
-    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 2048)
+    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', args.encoder_ffn_embed_dim)
     args.decoder_layers = getattr(args, 'decoder_layers', 6)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 8)
     args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', False)
@@ -892,6 +989,7 @@ def base_architecture(args):
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
     args.binorm = getattr(args, 'binorm', False)
+    args.transformer_encoder = getattr(args, 'transformer_encoder', False)
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
