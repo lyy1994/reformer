@@ -73,10 +73,10 @@ class MultiheadAttention2D(nn.Module):
         :param query: Output x Source x Batch x Channel
         :param key: Input x Source x Batch x Channel
         :param value: the same to key
-        :param key_padding_mask: Batch x Source, required only reduce_tgt=False
+        :param key_padding_mask: Batch x Source, required only tgt_attn=False
         :param incremental_state:
         :param need_weights:
-        :param attn_mask: Output x Input, required only reduce_tgt=True
+        :param attn_mask: Output x Input, required only tgt_attn=True
         :return:
         """
         # since data_ptr() is used to detect whether q, k, v are the same be
