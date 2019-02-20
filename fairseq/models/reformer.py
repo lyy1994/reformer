@@ -118,14 +118,10 @@ class ReformerModel(FairseqModel):
                             help='the type of information flow for self-attention')
         parser.add_argument('--summary-ffn', action='store_true',
                             help='add a ffn to the end of a decoder layer (only for parallel flow)')
-        parser.add_argument('--dropout-before', action='store_true',
-                            help='apply dropout to embeddings before the input layer')
         parser.add_argument('--src-tgt-embed', action='store_true',
                             help='use source and target embeddings')
         parser.add_argument('--non-parametric-normalize', action='store_true',
                             help='layer normalization without element-wise affine transformation')
-        parser.add_argument('--decoder-sublayer-before', action='store_true',
-                            help='apply decoder self-attention before encoder self-attention')
         parser.add_argument('--encoder-ffn', action='store_true',
                             help='apply ffn after encoder self-attention')
         parser.add_argument('--decoder-ffn', action='store_true',
@@ -240,6 +236,7 @@ class ReformerEncoder(FairseqEncoder):
 
     def __init__(self, args, dictionary, embed_tokens, left_pad=True):
         super().__init__(dictionary)
+        self.dropout = args.dropout
 
         embed_dim = embed_tokens.embedding_dim
         self.padding_idx = embed_tokens.padding_idx
@@ -292,6 +289,7 @@ class ReformerEncoder(FairseqEncoder):
             x += self.embed_positions(src_tokens)
         if self.src_embed is not None:
             x += self.src_embed.unsqueeze(0) * self.embed_scale
+        x = F.dropout(x, p=self.dropout, training=self.training)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -450,7 +448,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             mean=0, std=embed_dim ** -0.5
         )) if args.src_tgt_embed else None
 
-        self.dropout_before = args.dropout_before
         self.input_layer = ReformerInputLayer(args)
 
         self.layers = nn.ModuleList([])
@@ -474,7 +471,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             self.embed_out = nn.Parameter(torch.Tensor(len(dictionary), output_embed_dim))
             nn.init.normal_(self.embed_out, mean=0, std=output_embed_dim ** -0.5)
         self.register_buffer('version', torch.Tensor([2]))
-        self.normalize = args.decoder_normalize_before and final_norm
+        self.normalize = args.decoder_normalize_before and final_norm and not args.binorm
         if self.normalize:
             self.layer_norm = LayerNorm(model_dim, not args.non_parametric_normalize)
 
@@ -520,21 +517,17 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             x += positions
         if self.tgt_embed is not None:
             x += self.tgt_embed.unsqueeze(0) * self.embed_scale
+        x = F.dropout(x, p=self.dropout, training=self.training)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
         attn = None
 
         src_input, tgt_input = encoder_out['encoder_out'], x
-        if self.dropout_before:
-            src_input = F.dropout(src_input, p=self.dropout, training=self.training)
-            tgt_input = F.dropout(tgt_input, p=self.dropout, training=self.training)
+        # TODO: apply dropout to transformer encoder output
         # form a source-target 2D representation
         # T x B x C -> T x S x B x C
         x = self.input_layer(src_input, tgt_input)
-        # dropout should happen after we have the 2D representation
-        if not self.dropout_before:
-            x = F.dropout(x, p=self.dropout, training=self.training)
 
         inner_states = [x]
 
@@ -703,22 +696,14 @@ class ReformerDecoderLayer(nn.Module):
         super().__init__()
         self.no_encoder_attn = no_encoder_attn
         self.flow = args.flow
-        self.decoder_sublayer_before = args.decoder_sublayer_before
         self.scaling = VALID_SCALING[args.scaling](2.)
         self.extra_encattn = args.extra_encattn
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
-        self.maybe_declare('decoder', args, before=True)
+        self.declare('decoder', args)
         if not self.no_encoder_attn:
             self.declare('encoder', args)
-        self.maybe_declare('decoder', args, after=True)
         self.summary_ffn = ReformerDecoderSubLayer(args, is_ffn=True) if args.summary_ffn else None
-
-    def maybe_declare(self, sublayer_type, args, before=False, after=False):
-        assert before ^ after
-        assert sublayer_type == 'decoder'
-        if after ^ self.decoder_sublayer_before:
-            self.declare(sublayer_type, args)
 
     def declare(self, sublayer_type, args):
         assert sublayer_type in ['encoder', 'decoder']
@@ -771,8 +756,8 @@ class ReformerDecoderLayer(nn.Module):
     @register_flow('sequential')
     def sequential(self, x, encoder_padding_mask, incremental_state,
                    self_attn_mask=None, self_attn_padding_mask=None):
-        x, dec_attn = self.maybe_run('decoder', x, encoder_padding_mask, incremental_state,
-                                     self_attn_mask, self_attn_padding_mask, before=True)
+        x, dec_attn = self.run('decoder', x, encoder_padding_mask, incremental_state,
+                               self_attn_mask, self_attn_padding_mask)
 
         enc_attn = None
         if not self.no_encoder_attn:
@@ -780,21 +765,7 @@ class ReformerDecoderLayer(nn.Module):
                                    self_attn_mask=self_attn_mask,
                                    self_attn_padding_mask=self_attn_padding_mask)
 
-        x, dec_attn = self.maybe_run('decoder', x, encoder_padding_mask, incremental_state,
-                                     self_attn_mask, self_attn_padding_mask, after=True)
-
         return x, enc_attn
-
-    def maybe_run(self, sublayer_type, x, encoder_padding_mask, incremental_state, self_attn_mask,
-                  self_attn_padding_mask, before=False, after=False):
-        assert before ^ after
-        assert sublayer_type == 'decoder'
-        attn = None
-        if after ^ self.decoder_sublayer_before:
-            x, attn = self.run(sublayer_type, x, encoder_padding_mask, incremental_state,
-                               self_attn_mask=self_attn_mask,
-                               self_attn_padding_mask=self_attn_padding_mask)
-        return x, attn
 
     def run(self, sublayer_type, x, encoder_padding_mask, incremental_state, self_attn_mask, self_attn_padding_mask):
         assert sublayer_type in ['encoder', 'decoder']
@@ -983,7 +954,6 @@ def base_architecture(args):
 
     args.scaling = getattr(args, 'scaling', 'null')
     args.decoder_input_layer = getattr(args, 'decoder_input_layer', 'add')
-    args.dropout_before = getattr(args, 'dropout_before', False)
     args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'max')
     args.flow = getattr(args, 'flow', 'sequential')
     args.summary_ffn = getattr(args, 'summary_ffn', False)
@@ -997,7 +967,6 @@ def base_architecture(args):
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
     args.non_parametric_normalize = getattr(args, 'non_parametric_normalize', False)
-    args.decoder_sublayer_before = getattr(args, 'decoder_sublayer_before', False)
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
     args.binorm = getattr(args, 'binorm', False)
@@ -1007,6 +976,9 @@ def base_architecture(args):
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
 def reformer_iwslt_de_en(args):
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 256)
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1024)
+    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 4)
+    args.encoder_layers = getattr(args, 'encoder_layers', 6)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 256)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 1024)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 4)
