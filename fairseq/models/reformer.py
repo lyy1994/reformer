@@ -17,7 +17,7 @@ from fairseq import utils
 
 from fairseq.modules import (
     AdaptiveSoftmax, LearnedPositionalEmbedding, MultiheadAttention2D,
-    MultiheadAttention, SinusoidalPositionalEmbedding
+    MultiheadAttention, SinusoidalPositionalEmbedding, Reducer
 )
 
 from . import (
@@ -34,7 +34,6 @@ VALID_INPUT_LAYER = {
     'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
 }
-VALID_OUTPUT_LAYER = ['max', 'attn']
 
 MODULE_DEVICE = collections.defaultdict(lambda: None)
 
@@ -112,7 +111,7 @@ class ReformerModel(FairseqModel):
                             help='the method chosen to scale the adding output')
         parser.add_argument('--decoder-input-layer', choices=VALID_INPUT_LAYER.keys(),
                             help='the method chosen to produce the 2D input')
-        parser.add_argument('--decoder-output-layer', choices=VALID_OUTPUT_LAYER,
+        parser.add_argument('--decoder-output-layer', choices=Reducer.VALID_REDUCER.keys(),
                             help='the method chosen to produce the 1D output')
         parser.add_argument('--flow', choices=VALID_FLOW.keys(),
                             help='the type of information flow for self-attention')
@@ -627,41 +626,16 @@ class ReformerOutputLayer(nn.Module):
     def __init__(self, args):
         super().__init__()
         # TODO: more reduction functions
-        self.output_layer = args.decoder_output_layer
-        self.attention_dropout = args.attention_dropout
-        if self.output_layer == 'attn':
-            self.weights = nn.Parameter(torch.Tensor(args.decoder_model_dim, args.decoder_model_dim))
-            nn.init.normal_(self.weights, mean=0, std=args.decoder_model_dim ** -0.5)
-
-    def extra_repr(self):
-        return 'output_layer={},'.format(self.output_layer)
+        self.reducer = Reducer(args.decoder_output_layer, True, args)
 
     def forward(self, x, encoder_padding_mask):
         # since we reduce the source dim, encoder_padding_mask should be taken into account
-        if encoder_padding_mask is None:
-            # B x S
-            encoder_padding_mask = x.new_zeros(x.size(2), x.size(1)).byte()
+        # T x S x B x C
+        encoder_padding_mask = encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1) \
+            if encoder_padding_mask is not None else None
         # since reduction happens after layer_norm, additional layer_norm might be required after the
         # reduction, especially for those reduction variants that does not preserve output scale
-        if self.output_layer == 'max':
-            # T x S x B x C
-            x = x.masked_fill(
-                encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
-                float('-inf'),
-            ).max(dim=1)[0]
-        elif self.output_layer == 'attn':
-            # T x S x B x C
-            weights = F.linear(x, self.weights)
-            # B x S
-            weights = weights.masked_fill(
-                encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
-                float('-inf'),
-            )
-            prob = F.softmax(weights, dim=1)
-            prob = F.dropout(prob, p=self.attention_dropout, training=self.training)
-            assert torch.isnan(prob).byte().any() == 0
-            x = torch.sum(prob * x, dim=1)
-        return x
+        return self.reducer(x, encoder_padding_mask)
 
 
 VALID_FLOW = {}
