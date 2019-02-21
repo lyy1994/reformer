@@ -629,10 +629,6 @@ class ReformerOutputLayer(nn.Module):
         self.reducer = Reducer(args.decoder_output_layer, True, args)
 
     def forward(self, x, encoder_padding_mask):
-        # since we reduce the source dim, encoder_padding_mask should be taken into account
-        # T x S x B x C
-        encoder_padding_mask = encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1) \
-            if encoder_padding_mask is not None else None
         # since reduction happens after layer_norm, additional layer_norm might be required after the
         # reduction, especially for those reduction variants that does not preserve output scale
         return self.reducer(x, encoder_padding_mask)

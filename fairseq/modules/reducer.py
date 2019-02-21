@@ -10,6 +10,8 @@ from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
 
+from fairseq import utils
+
 _VALID_REDUCER = {}
 
 
@@ -42,6 +44,48 @@ class Reducer(nn.Module):
     def forward(self, *args, **kwargs):
         return self.customize_forward(*args, **kwargs)
 
+    def _prepare_repr(self, x, incremental_state=None):
+        """
+        Concatenate the previous representation and the current
+        representation in the target dimension.
+        :param x: torch.FloatTensor, T x S x B x C
+        :param incremental_state: Dictionary
+        :return: torch.FloatTensor, T x S x B x C
+        """
+        if incremental_state is not None:
+            saved_state = self._get_input_buffer(incremental_state)
+
+            if 'prev_repr' in saved_state:
+                x = torch.cat((saved_state['prev_repr'], x), dim=0)
+            saved_state['prev_repr'] = x
+
+            self._set_input_buffer(incremental_state, saved_state)
+        return x
+
+    def reorder_incremental_state(self, incremental_state, new_order):
+        """Reorder buffered internal state (for incremental generation)."""
+        input_buffer = self._get_input_buffer(incremental_state)
+        if input_buffer is not None:
+            for k in input_buffer.keys():
+                # 2 is the Batch dim
+                input_buffer[k] = input_buffer[k].index_select(2, new_order.to(input_buffer[k].device))
+            self._set_input_buffer(incremental_state, input_buffer)
+
+    def _get_input_buffer(self, incremental_state):
+        return utils.get_incremental_state(
+            self,
+            incremental_state,
+            'repr_state',
+        ) or {}
+
+    def _set_input_buffer(self, incremental_state, buffer):
+        utils.set_incremental_state(
+            self,
+            incremental_state,
+            'repr_state',
+            buffer,
+        )
+
     @register_reducer('max')
     def max(self, *args, **kwargs):
         """
@@ -55,12 +99,13 @@ class Reducer(nn.Module):
             """
             Customized forward function
             :param x: torch.FloatTensor, T x S x B x C
-            :param mask: torch.ByteTensor, T x S x B x C, masked elements indicated by 1
+            :param mask: torch.ByteTensor, B x S, masked elements indicated by 1
             :param incremental_state: Dictionary
             :return: torch.FloatTensor, T x B x C
             """
             # T x S x B x C
             if mask is not None:
+                mask = mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1)
                 x = x.masked_fill(
                     mask,
                     float('-inf'),
@@ -73,11 +118,23 @@ class Reducer(nn.Module):
             """
             Customized forward function
             :param x: torch.FloatTensor, T x S x B x C
-            :param mask: torch.ByteTensor, T x S x B x C, masked elements indicated by -inf
+            :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
             :param incremental_state: Dictionary
             :return: torch.FloatTensor, S x B x C
             """
-            raise NotImplementedError
+            x = self._prepare_repr(x, incremental_state)
+            if mask is None:
+                # decoding
+                x = x.max(dim=0)[0]
+            else:
+                # training
+                out = x[:1, :, :, :]
+                for i in range(1, x.size(0)):
+                    out = torch.cat(
+                        (out, torch.max(x[i, :, :, :], out[i - 1, :, :, :]).unsqueeze(0)),
+                        dim=0)
+                x = out
+            return x
 
         return reduce_src if self.reduce_src else reduce_tgt
 
@@ -97,13 +154,14 @@ class Reducer(nn.Module):
             """
             Customized forward function
             :param x: torch.FloatTensor, T x S x B x C
-            :param mask: torch.ByteTensor, T x S x B x C, masked elements indicated by 1
+            :param mask: torch.ByteTensor, B x S, masked elements indicated by 1
             :param incremental_state: Dictionary
             :return: torch.FloatTensor, T x B x C
             """
             # T x S x B x C
             weights = F.linear(x, self.weights)
             if mask is not None:
+                mask = mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1)
                 weights = weights.masked_fill(
                     mask,
                     float('-inf'),
@@ -117,11 +175,74 @@ class Reducer(nn.Module):
             """
             Customized forward function
             :param x: torch.FloatTensor, T x S x B x C
-            :param mask: torch.ByteTensor, T x S x B x C, masked elements indicated by -inf
+            :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
             :param incremental_state: Dictionary
             :return: torch.FloatTensor, S x B x C
             """
-            raise NotImplementedError
+            raise NotImplementedError(f'{self.method} consumes too much memory')
+
+        return reduce_src if self.reduce_src else reduce_tgt
+
+    @register_reducer('softmax')
+    def softmax(self, *args, **kwargs):
+        """
+        Retain the maximum elements over the given dimension via a soft way.
+        :param args: Tuple
+        :param kwargs: Dictionary
+        :return: Callable
+        """
+
+        def reduce_src(x, mask, incremental_state=None):
+            """
+            Customized forward function
+            :param x: torch.FloatTensor, T x S x B x C
+            :param mask: torch.ByteTensor, B x S, masked elements indicated by 1
+            :param incremental_state: Dictionary
+            :return: torch.FloatTensor, T x B x C
+            """
+            weights = x
+            # T x S x B x C
+            if mask is not None:
+                mask = mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1)
+                weights = weights.masked_fill(
+                    mask,
+                    float('-inf'),
+                )
+            # T x S x B x C
+            prob = F.softmax(weights, dim=1)
+            assert torch.isnan(prob).byte().any() == 0
+            # T x B x C
+            x = torch.sum(prob * x, dim=1)
+            assert torch.isnan(x).byte().any() == 0
+            return x
+
+        def reduce_tgt(x, mask, incremental_state=None):
+            """
+            Customized forward function
+            :param x: torch.FloatTensor, T x S x B x C
+            :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
+            :param incremental_state: Dictionary
+            :return: torch.FloatTensor, S x B x C
+            """
+            x = self._prepare_repr(x, incremental_state)
+            if mask is None:
+                # decoding
+                # T x S x B x C
+                prob = F.softmax(x, dim=0)
+                assert torch.isnan(prob).byte().any() == 0
+                # T x B x C
+                x = torch.sum(prob * x, dim=0)
+            else:
+                # training
+                out = x[:1, :, :, :]
+                for i in range(1, x.size(0)):
+                    out = torch.cat(
+                        (out, torch.sum(
+                            F.softmax(x[:i + 1, :, :, :], dim=0)
+                            * x[:i + 1, :, :, :], dim=0).unsqueeze(0)),
+                        dim=0)
+                x = out
+            return x
 
         return reduce_src if self.reduce_src else reduce_tgt
 
