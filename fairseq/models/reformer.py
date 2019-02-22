@@ -119,16 +119,12 @@ class ReformerModel(FairseqModel):
                             help='add a ffn to the end of a decoder layer (only for parallel flow)')
         parser.add_argument('--src-tgt-embed', action='store_true',
                             help='use source and target embeddings')
-        parser.add_argument('--non-parametric-normalize', action='store_true',
-                            help='layer normalization without element-wise affine transformation')
         parser.add_argument('--encoder-ffn', action='store_true',
                             help='apply ffn after encoder self-attention')
         parser.add_argument('--decoder-ffn', action='store_true',
                             help='apply ffn after decoder self-attention')
         parser.add_argument('--extra-encattn', action='store_true',
                             help='apply an additional encoder self-attention')
-        parser.add_argument('--binorm', action='store_true',
-                            help='apply layer normalization at both the input and the output of the layer block')
         parser.add_argument('--transformer-encoder', action='store_true',
                             help='apply the transformer encoder before the reformer decoder')
 
@@ -470,9 +466,9 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             self.embed_out = nn.Parameter(torch.Tensor(len(dictionary), output_embed_dim))
             nn.init.normal_(self.embed_out, mean=0, std=output_embed_dim ** -0.5)
         self.register_buffer('version', torch.Tensor([2]))
-        self.normalize = args.decoder_normalize_before and final_norm and not args.binorm
+        self.normalize = args.decoder_normalize_before and final_norm
         if self.normalize:
-            self.layer_norm = LayerNorm(model_dim, not args.non_parametric_normalize)
+            self.layer_norm = LayerNorm(model_dim)
 
         # output_layer function to compress model output before softmax
         # Target x Source x Batch x Channel -> T x B x C
@@ -590,19 +586,12 @@ class ReformerInputLayer(nn.Module):
         # TODO: more ways to form 2D representation
         self.input_layer = args.decoder_input_layer
         self.scaling = VALID_SCALING[args.scaling](2.)
-        self.binorm = args.binorm
-        if self.binorm:
-            self.src_norm = LayerNorm(args.encoder_embed_dim, not args.non_parametric_normalize)
-            self.tgt_norm = LayerNorm(args.decoder_embed_dim, not args.non_parametric_normalize)
 
     def extra_repr(self):
         return 'input_layer={}, scaling={}'.format(self.input_layer, self.scaling)
 
     def forward(self, src_embed, tgt_embed):
         x = None
-        if self.binorm:
-            src_embed = self.src_norm(src_embed)
-            tgt_embed = self.tgt_norm(tgt_embed)
         src_len = src_embed.size(0)
         tgt_len = tgt_embed.size(0)
         if self.input_layer == 'cat':
@@ -680,15 +669,15 @@ class ReformerDecoderLayer(nn.Module):
         decoder_attn = True if sublayer_type == 'decoder' else False
         sublayers = nn.ModuleList([])
         # add self-attention layer
-        sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=False))
+        sublayers.append(ReformerDecoderSubLayer(args, 'attn', decoder_attn=decoder_attn))
         if self.extra_encattn and sublayer_type == 'encoder':
             # first add a ffn layer
-            sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
+            sublayers.append(ReformerDecoderSubLayer(args, 'ffn', decoder_attn=decoder_attn))
             # then add a self-attention layer
-            sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=False))
+            sublayers.append(ReformerDecoderSubLayer(args, 'attn', decoder_attn=decoder_attn))
         # add ffn layer
         if getattr(args, f'{sublayer_type}_ffn'):
-            sublayers.append(ReformerDecoderSubLayer(args, decoder_attn=decoder_attn, is_ffn=True))
+            sublayers.append(ReformerDecoderSubLayer(args, 'ffn', decoder_attn=decoder_attn))
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def extra_repr(self):
@@ -741,12 +730,9 @@ class ReformerDecoderLayer(nn.Module):
         assert sublayer_type in ['encoder', 'decoder']
         attn = None
         for layer in getattr(self, f'{sublayer_type}_sublayers'):
-            if isinstance(layer, ReformerDecoderSubLayer):
-                x, attn = layer(x, encoder_padding_mask, incremental_state,
-                                self_attn_mask=self_attn_mask,
-                                self_attn_padding_mask=self_attn_padding_mask)
-            else:
-                x = layer(x)
+            x, attn = layer(x, encoder_padding_mask, incremental_state,
+                            self_attn_mask=self_attn_mask,
+                            self_attn_padding_mask=self_attn_padding_mask)
         return x, attn
 
 
@@ -771,11 +757,22 @@ def fetch_input(forward_fn):
                 if isinstance(item, torch.Tensor) and MODULE_DEVICE[self._id] is not None else item
                 for item in args]
         kwargs = {key: value.cuda(MODULE_DEVICE[self._id])
-                  if isinstance(value, torch.Tensor) and MODULE_DEVICE[self._id] is not None else value
+        if isinstance(value, torch.Tensor) and MODULE_DEVICE[self._id] is not None else value
                   for key, value in kwargs.items()}
         return forward_fn(self, *args, **kwargs)
 
     return _forward_fn
+
+
+VALID_SUBLAYER = {}
+
+
+def register_sublayer(name):
+    def register_sublayer_fn(fn):
+        VALID_SUBLAYER[name] = fn
+        return fn
+
+    return register_sublayer_fn
 
 
 class ReformerDecoderSubLayer(nn.Module):
@@ -785,32 +782,19 @@ class ReformerDecoderSubLayer(nn.Module):
     """
 
     @register_module
-    def __init__(self, args, decoder_attn=True, is_ffn=True):
+    def __init__(self, args, layer_type, decoder_attn=True):
         super().__init__()
         self.decoder_attn = decoder_attn
-        self.is_ffn = is_ffn
+        assert layer_type in VALID_SUBLAYER.keys()
+        self.layer_type = layer_type
         self.embed_dim = args.decoder_model_dim
         self.dropout = args.dropout
         self.relu_dropout = args.relu_dropout
         self.normalize_before = args.decoder_normalize_before
-        self.binorm = args.binorm
 
-        if self.is_ffn:
-            self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
-            self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
-        else:
-            self.self_attn = MultiheadAttention2D(
-                self.embed_dim, args.decoder_attention_heads,
-                dropout=args.attention_dropout,
-                tgt_attn=self.decoder_attn,
-            )
-            self.need_attn = True
+        self.customize_forward = VALID_SUBLAYER[self.layer_type](self, args)
 
-        if not self.binorm:
-            self.layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
-        else:
-            self.input_layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
-            self.output_layer_norm = LayerNorm(self.embed_dim, not args.non_parametric_normalize)
+        self.layer_norm = LayerNorm(self.embed_dim)
 
     @fetch_input
     def forward(self, x, encoder_padding_mask, incremental_state,
@@ -827,30 +811,12 @@ class ReformerDecoderSubLayer(nn.Module):
         attn = None
 
         residual = x
-        if not self.binorm:
-            x = self.maybe_layer_norm(self.layer_norm, x, before=True)
-        else:
-            x = self.input_layer_norm(x)
-        if self.is_ffn:
-            x = F.relu(self.fc1(x))
-            x = F.dropout(x, p=self.relu_dropout, training=self.training)
-            x = self.fc2(x)
-        else:
-            x, attn = self.self_attn(
-                query=x,
-                key=x,
-                value=x,
-                key_padding_mask=self_attn_padding_mask if self.decoder_attn else encoder_padding_mask,
-                incremental_state=incremental_state,
-                need_weights=(not self.training and self.need_attn),
-                attn_mask=self_attn_mask if self.decoder_attn else None,
-            )
+        x = self.maybe_layer_norm(self.layer_norm, x, before=True)
+        x = self.customize_forward(x, encoder_padding_mask, incremental_state,
+                                   self_attn_mask, self_attn_padding_mask)
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
-        if not self.binorm:
-            x = self.maybe_layer_norm(self.layer_norm, x, after=True)
-        else:
-            x = self.output_layer_norm(x)
+        x = self.maybe_layer_norm(self.layer_norm, x, after=True)
         return x, attn
 
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
@@ -862,6 +828,44 @@ class ReformerDecoderSubLayer(nn.Module):
 
     def make_generation_fast_(self, need_attn=False, **kwargs):
         self.need_attn = need_attn
+
+    @register_sublayer('ffn')
+    def ffn(self, args):
+        self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
+        self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
+
+        def forward(x, encoder_padding_mask, incremental_state,
+                    self_attn_mask, self_attn_padding_mask):
+            x = F.relu(self.fc1(x))
+            x = F.dropout(x, p=self.relu_dropout, training=self.training)
+            x = self.fc2(x)
+            return x
+
+        return forward
+
+    @register_sublayer('attn')
+    def attn(self, args):
+        self.self_attn = MultiheadAttention2D(
+            self.embed_dim, args.decoder_attention_heads,
+            dropout=args.attention_dropout,
+            tgt_attn=self.decoder_attn,
+        )
+        self.need_attn = True
+
+        def forward(x, encoder_padding_mask, incremental_state,
+                    self_attn_mask, self_attn_padding_mask):
+            x, attn = self.self_attn(
+                query=x,
+                key=x,
+                value=x,
+                key_padding_mask=self_attn_padding_mask if self.decoder_attn else encoder_padding_mask,
+                incremental_state=incremental_state,
+                need_weights=(not self.training and self.need_attn),
+                attn_mask=self_attn_mask if self.decoder_attn else None,
+            )
+            return x
+
+        return forward
 
 
 def Embedding(num_embeddings, embedding_dim, padding_idx):
@@ -936,10 +940,8 @@ def base_architecture(args):
     args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_model_dim)
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
-    args.non_parametric_normalize = getattr(args, 'non_parametric_normalize', False)
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
-    args.binorm = getattr(args, 'binorm', False)
     args.transformer_encoder = getattr(args, 'transformer_encoder', False)
 
 
