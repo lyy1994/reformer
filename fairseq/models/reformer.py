@@ -519,7 +519,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         attn = None
 
         src_input, tgt_input = encoder_out['encoder_out'], x
-        # TODO: apply dropout to transformer encoder output
         # form a source-target 2D representation
         # T x B x C -> T x S x B x C
         x = self.input_layer(src_input, tgt_input)
@@ -669,15 +668,15 @@ class ReformerDecoderLayer(nn.Module):
         decoder_attn = True if sublayer_type == 'decoder' else False
         sublayers = nn.ModuleList([])
         # add self-attention layer
-        sublayers.append(ReformerDecoderSubLayer(args, 'attn', decoder_attn=decoder_attn))
+        sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
         if self.extra_encattn and sublayer_type == 'encoder':
             # first add a ffn layer
-            sublayers.append(ReformerDecoderSubLayer(args, 'ffn', decoder_attn=decoder_attn))
+            sublayers.append(ReformerDecoderSubLayer(args, 'ffn2d', decoder_attn=decoder_attn))
             # then add a self-attention layer
-            sublayers.append(ReformerDecoderSubLayer(args, 'attn', decoder_attn=decoder_attn))
+            sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
         # add ffn layer
         if getattr(args, f'{sublayer_type}_ffn'):
-            sublayers.append(ReformerDecoderSubLayer(args, 'ffn', decoder_attn=decoder_attn))
+            sublayers.append(ReformerDecoderSubLayer(args, 'ffn2d', decoder_attn=decoder_attn))
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def extra_repr(self):
@@ -812,8 +811,8 @@ class ReformerDecoderSubLayer(nn.Module):
 
         residual = x
         x = self.maybe_layer_norm(self.layer_norm, x, before=True)
-        x = self.customize_forward(x, encoder_padding_mask, incremental_state,
-                                   self_attn_mask, self_attn_padding_mask)
+        x, attn = self.customize_forward(x, encoder_padding_mask, incremental_state,
+                                         self_attn_mask, self_attn_padding_mask)
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(self.layer_norm, x, after=True)
@@ -829,7 +828,7 @@ class ReformerDecoderSubLayer(nn.Module):
     def make_generation_fast_(self, need_attn=False, **kwargs):
         self.need_attn = need_attn
 
-    @register_sublayer('ffn')
+    @register_sublayer('ffn2d')
     def ffn(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
@@ -839,18 +838,18 @@ class ReformerDecoderSubLayer(nn.Module):
             x = F.relu(self.fc1(x))
             x = F.dropout(x, p=self.relu_dropout, training=self.training)
             x = self.fc2(x)
-            return x
+            return x, None
 
         return forward
 
-    @register_sublayer('attn')
+    @register_sublayer('attn2d')
     def attn(self, args):
         self.self_attn = MultiheadAttention2D(
             self.embed_dim, args.decoder_attention_heads,
             dropout=args.attention_dropout,
             tgt_attn=self.decoder_attn,
         )
-        self.need_attn = True
+        self.need_attn = False
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
@@ -863,7 +862,7 @@ class ReformerDecoderSubLayer(nn.Module):
                 need_weights=(not self.training and self.need_attn),
                 attn_mask=self_attn_mask if self.decoder_attn else None,
             )
-            return x
+            return x, attn
 
         return forward
 
