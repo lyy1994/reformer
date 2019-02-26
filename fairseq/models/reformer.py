@@ -295,12 +295,15 @@ class ReformerEncoder(FairseqEncoder):
             encoder_padding_mask = None
 
         if self.transformer_encoder:
+            residual = x
             # encoder layers
             for layer in self.layers:
                 x = layer(x, encoder_padding_mask)
 
             if self.normalize:
                 x = self.layer_norm(x)
+
+            x = residual + x
 
         return {
             'encoder_out': x,  # T x B x C
@@ -781,7 +784,7 @@ class ReformerDecoderSubLayer(nn.Module):
     """
 
     @register_module
-    def __init__(self, args, layer_type, decoder_attn=True):
+    def __init__(self, args, layer_type, decoder_attn=True, **kwargs):
         super().__init__()
         self.decoder_attn = decoder_attn
         assert layer_type in VALID_SUBLAYER.keys()
@@ -791,7 +794,7 @@ class ReformerDecoderSubLayer(nn.Module):
         self.relu_dropout = args.relu_dropout
         self.normalize_before = args.decoder_normalize_before
 
-        self.customize_forward = VALID_SUBLAYER[self.layer_type](self, args)
+        self.customize_forward = VALID_SUBLAYER[self.layer_type](self, args, kwargs)
 
         self.layer_norm = LayerNorm(self.embed_dim)
 
@@ -807,8 +810,6 @@ class ReformerDecoderSubLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
-        attn = None
-
         residual = x
         x = self.maybe_layer_norm(self.layer_norm, x, before=True)
         x, attn = self.customize_forward(x, encoder_padding_mask, incremental_state,
@@ -829,7 +830,7 @@ class ReformerDecoderSubLayer(nn.Module):
         self.need_attn = need_attn
 
     @register_sublayer('ffn2d')
-    def ffn(self, args):
+    def ffn(self, args, kwargs):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
 
@@ -843,7 +844,7 @@ class ReformerDecoderSubLayer(nn.Module):
         return forward
 
     @register_sublayer('attn2d')
-    def attn(self, args):
+    def attn(self, args, kwargs):
         self.self_attn = MultiheadAttention2D(
             self.embed_dim, args.decoder_attention_heads,
             dropout=args.attention_dropout,
