@@ -120,21 +120,9 @@ class Reducer(nn.Module):
             :param x: torch.FloatTensor, T x S x B x C
             :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
             :param incremental_state: Dictionary
-            :return: torch.FloatTensor, S x B x C
+            :return: torch.FloatTensor, T x S x B x C
             """
-            x = self._prepare_repr(x, incremental_state)
-            if mask is None:
-                # decoding
-                x = x.max(dim=0)[0]
-            else:
-                # training
-                out = x[:1, :, :, :]
-                for i in range(1, x.size(0)):
-                    out = torch.cat(
-                        (out, torch.max(x[i, :, :, :], out[i - 1, :, :, :]).unsqueeze(0)),
-                        dim=0)
-                x = out
-            return x
+            raise NotImplementedError(f'{self.method} consumes too much memory')
 
         return reduce_src if self.reduce_src else reduce_tgt
 
@@ -177,7 +165,7 @@ class Reducer(nn.Module):
             :param x: torch.FloatTensor, T x S x B x C
             :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
             :param incremental_state: Dictionary
-            :return: torch.FloatTensor, S x B x C
+            :return: torch.FloatTensor, T x S x B x C
             """
             raise NotImplementedError(f'{self.method} consumes too much memory')
 
@@ -222,26 +210,73 @@ class Reducer(nn.Module):
             :param x: torch.FloatTensor, T x S x B x C
             :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
             :param incremental_state: Dictionary
-            :return: torch.FloatTensor, S x B x C
+            :return: torch.FloatTensor, T x S x B x C
             """
+            raise NotImplementedError(f'{self.method} consumes too much memory')
+
+        return reduce_src if self.reduce_src else reduce_tgt
+
+    @register_reducer('vattn')
+    def vattn(self, flags, *args, **kwargs):
+        """
+        Reduce the given dimension based on the distribution computed by an affine transformation.
+        :param flags: Namespace
+        :param args: Tuple
+        :param kwargs: Dictionary
+        :return: Callable
+        """
+        self.weights = Parameter(torch.Tensor(1, flags.decoder_model_dim))
+        nn.init.normal_(self.weights, mean=0, std=flags.decoder_model_dim ** -0.5)
+
+        def reduce_src(x, mask, incremental_state=None):
+            """
+            Customized forward function
+            :param x: torch.FloatTensor, T x S x B x C
+            :param mask: torch.ByteTensor, B x S, masked elements indicated by 1
+            :param incremental_state: Dictionary
+            :return: torch.FloatTensor, T x B x C
+            """
+            T, S, B, C = x.size()
+            # T x S x B x 1
+            weights = F.linear(x, self.weights)
+            if mask is not None:
+                mask = mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1)
+                weights = weights.masked_fill(
+                    mask,
+                    float('-inf'),
+                )
+            prob = F.softmax(weights, dim=1)
+            assert torch.isnan(prob).byte().any() == 0
+            prob = prob.transpose(1, 2).contiguous().view(T * B, S, 1)
+            x = x.transpose(1, 2).contiguous().view(T * B, S, C)
+            x = torch.bmm(prob.transpose(1, 2), x).squeeze(1).view(T, B, C)
+            return x
+
+        def reduce_tgt(x, mask, incremental_state=None):
+            """
+            Customized forward function
+            :param x: torch.FloatTensor, T x S x B x C
+            :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
+            :param incremental_state: Dictionary
+            :return: torch.FloatTensor, T x S x B x C
+            """
+            out_len = x.size(0)
             x = self._prepare_repr(x, incremental_state)
-            if mask is None:
-                # decoding
-                # T x S x B x C
-                prob = F.softmax(x, dim=0)
-                assert torch.isnan(prob).byte().any() == 0
-                # T x B x C
-                x = torch.sum(prob * x, dim=0)
-            else:
-                # training
-                out = x[:1, :, :, :]
-                for i in range(1, x.size(0)):
-                    out = torch.cat(
-                        (out, torch.sum(
-                            F.softmax(x[:i + 1, :, :, :], dim=0)
-                            * x[:i + 1, :, :, :], dim=0).unsqueeze(0)),
-                        dim=0)
-                x = out
+            in_len, S, B, C = x.size()
+            # in_len x S x B x C -> B * S x in_len x C
+            x = x.transpose(0, 2).contiguous().view(B * S, in_len, C)
+            # B * S x in_len x 1
+            weights = F.linear(x, self.weights)
+            # B * S x in_len x out_len
+            weights = weights.repeat(1, 1, out_len)
+            # B * S x out_len x in_len
+            weights = weights.transpose(1, 2)
+            if mask is not None:
+                weights += mask.unsqueeze(0)
+            prob = F.softmax(weights, dim=2)
+            assert torch.isnan(prob).byte().any() == 0
+            # B * S x in_len x C -> out_len x S x B x C
+            x = torch.bmm(prob, x).view(B, S, out_len, C).transpose(0, 2)
             return x
 
         return reduce_src if self.reduce_src else reduce_tgt
