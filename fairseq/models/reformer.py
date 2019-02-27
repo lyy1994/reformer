@@ -126,6 +126,8 @@ class ReformerModel(FairseqModel):
                             help='apply ffn after decoder self-attention')
         parser.add_argument('--extra-attn', action='store_true',
                             help='apply an additional encoder self-attention')
+        parser.add_argument('--inside-reduce', action='store_true',
+                            help='apply dimension reduction to the end of each layer block')
         parser.add_argument('--transformer-encoder', action='store_true',
                             help='apply the transformer encoder before the reformer decoder')
 
@@ -665,8 +667,10 @@ class ReformerDecoderLayer(nn.Module):
         self.declare('decoder', args)
         if not self.no_encoder_attn:
             self.declare('encoder', args)
-        self.summary_ffn = ReformerDecoderSubLayer(args, is_ffn=True) \
+        self.summary_ffn = ReformerDecoderSubLayer(args, 'ffn') \
             if args.summary_ffn and self.flow == 'parallel' else None
+        self.reducer = ReformerDecoderSubLayer(args, 'reduce') \
+            if args.inside_reduce else None
 
     def declare(self, sublayer_type, args):
         assert sublayer_type in ['encoder', 'decoder']
@@ -700,6 +704,11 @@ class ReformerDecoderLayer(nn.Module):
         """
         x, attn = VALID_FLOW[self.flow](self, x, encoder_padding_mask, incremental_state,
                                         self_attn_mask, self_attn_padding_mask)
+        if self.summary_ffn is not None:
+            x, _ = self.summary_ffn(x, None, None)
+        if self.reducer is not None:
+            x, _ = self.reducer(x, encoder_padding_mask, incremental_state,
+                                self_attn_mask, self_attn_padding_mask)
         return x, attn
 
     @register_flow('parallel')
@@ -712,8 +721,6 @@ class ReformerDecoderLayer(nn.Module):
                                      self_attn_mask=self_attn_mask,
                                      self_attn_padding_mask=self_attn_padding_mask)
         out = (dec_out.to(enc_out.device) + enc_out) * self.scaling.to(enc_out.device)
-        if self.summary_ffn is not None:
-            out, _ = self.summary_ffn(out, None, None)
         return out, enc_attn
 
     @register_flow('sequential')
@@ -745,7 +752,7 @@ INCREMENTAL_MODULE_INSTANCE_ID = collections.defaultdict(lambda: 0)
 
 def register_module(init_fn):
     @functools.wraps(init_fn)
-    def register(self, *args, **kwargs):
+    def wrapper(self, *args, **kwargs):
         module_name = self.__class__.__name__
         # assign a unique id to each module instance
         if not hasattr(self, '_id'):
@@ -753,12 +760,12 @@ def register_module(init_fn):
             self._id = INCREMENTAL_MODULE_INSTANCE_ID[module_name]
         return init_fn(self, *args, **kwargs)
 
-    return register
+    return wrapper
 
 
 def fetch_input(forward_fn):
     @functools.wraps(forward_fn)
-    def _forward_fn(self, *args, **kwargs):
+    def wrapper(self, *args, **kwargs):
         args = [item.cuda(MODULE_DEVICE[self._id])
                 if isinstance(item, torch.Tensor) and MODULE_DEVICE[self._id] is not None else item
                 for item in args]
@@ -767,7 +774,7 @@ def fetch_input(forward_fn):
                   for key, value in kwargs.items()}
         return forward_fn(self, *args, **kwargs)
 
-    return _forward_fn
+    return wrapper
 
 
 VALID_SUBLAYER = {}
@@ -871,6 +878,28 @@ class ReformerDecoderSubLayer(nn.Module):
 
         return forward
 
+    @register_sublayer('reduce')
+    def reduce(self, args):
+        self.reducer = Reducer(args.decoder_output_layer, True, args)
+        self.fc = Linear(self.embed_dim, self.embed_dim)
+
+        # each sublayer should end with a linear transformation
+
+        def forward(x, encoder_padding_mask, incremental_state,
+                    self_attn_mask, self_attn_padding_mask):
+            # x: T x B x C if reduce_src else T x S x B x C
+            x = self.reducer(
+                x,
+                encoder_padding_mask,
+                incremental_state=incremental_state,
+            )
+            # TODO: additional dropout is required before fc
+            x = self.fc(x)
+            x = x.unsqueeze(1)
+            return x, None
+
+        return forward
+
 
 def Embedding(num_embeddings, embedding_dim, padding_idx):
     m = nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
@@ -936,6 +965,7 @@ def base_architecture(args):
     args.flow = getattr(args, 'flow', 'sequential')
     args.summary_ffn = getattr(args, 'summary_ffn', False)
     args.extra_attn = getattr(args, 'extra_attn', False)
+    args.inside_reduce = getattr(args, 'inside_reduce', False)
 
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
     args.decoder_model_dim = getattr(args, 'decoder_model_dim',
