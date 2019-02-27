@@ -127,7 +127,9 @@ class ReformerModel(FairseqModel):
         parser.add_argument('--extra-attn', action='store_true',
                             help='apply an additional encoder self-attention')
         parser.add_argument('--inside-reduce', action='store_true',
-                            help='apply dimension reduction to the end of each layer block')
+                            help='apply dimension reduction to each layer block')
+        parser.add_argument('--reduce-before', action='store_true',
+                            help='apply dimension reduction (if enabled) to the beginning of each layer block')
         parser.add_argument('--transformer-encoder', action='store_true',
                             help='apply the transformer encoder before the reformer decoder')
 
@@ -662,15 +664,20 @@ class ReformerDecoderLayer(nn.Module):
         self.flow = args.flow
         self.scaling = VALID_SCALING[args.scaling](2.)
         self.extra_attn = args.extra_attn
+        self.reduce_before = args.reduce_before
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
+        if self.reduce_before:
+            self.reducer = ReformerDecoderSubLayer(args, 'reduce') \
+                if args.inside_reduce else None
         self.declare('decoder', args)
         if not self.no_encoder_attn:
             self.declare('encoder', args)
         self.summary_ffn = ReformerDecoderSubLayer(args, 'ffn') \
             if args.summary_ffn and self.flow == 'parallel' else None
-        self.reducer = ReformerDecoderSubLayer(args, 'reduce') \
-            if args.inside_reduce else None
+        if not self.reduce_before:
+            self.reducer = ReformerDecoderSubLayer(args, 'reduce') \
+                if args.inside_reduce else None
 
     def declare(self, sublayer_type, args):
         assert sublayer_type in ['encoder', 'decoder']
@@ -702,11 +709,14 @@ class ReformerDecoderLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
+        if self.reducer is not None and self.reduce_before:
+            x, _ = self.reducer(x, encoder_padding_mask, incremental_state,
+                                self_attn_mask, self_attn_padding_mask)
         x, attn = VALID_FLOW[self.flow](self, x, encoder_padding_mask, incremental_state,
                                         self_attn_mask, self_attn_padding_mask)
         if self.summary_ffn is not None:
             x, _ = self.summary_ffn(x, None, None)
-        if self.reducer is not None:
+        if self.reducer is not None and not self.reduce_before:
             x, _ = self.reducer(x, encoder_padding_mask, incremental_state,
                                 self_attn_mask, self_attn_padding_mask)
         return x, attn
@@ -966,6 +976,7 @@ def base_architecture(args):
     args.summary_ffn = getattr(args, 'summary_ffn', False)
     args.extra_attn = getattr(args, 'extra_attn', False)
     args.inside_reduce = getattr(args, 'inside_reduce', False)
+    args.reduce_before = getattr(args, 'reduce_before', False)
 
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
     args.decoder_model_dim = getattr(args, 'decoder_model_dim',
