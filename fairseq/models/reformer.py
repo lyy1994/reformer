@@ -7,6 +7,7 @@
 
 import math
 import collections
+import functools
 
 import torch
 import torch.nn as nn
@@ -123,7 +124,7 @@ class ReformerModel(FairseqModel):
                             help='apply ffn after encoder self-attention')
         parser.add_argument('--decoder-ffn', action='store_true',
                             help='apply ffn after decoder self-attention')
-        parser.add_argument('--extra-encattn', action='store_true',
+        parser.add_argument('--extra-attn', action='store_true',
                             help='apply an additional encoder self-attention')
         parser.add_argument('--transformer-encoder', action='store_true',
                             help='apply the transformer encoder before the reformer decoder')
@@ -658,13 +659,14 @@ class ReformerDecoderLayer(nn.Module):
         self.no_encoder_attn = no_encoder_attn
         self.flow = args.flow
         self.scaling = VALID_SCALING[args.scaling](2.)
-        self.extra_encattn = args.extra_encattn
+        self.extra_attn = args.extra_attn
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
         self.declare('decoder', args)
         if not self.no_encoder_attn:
             self.declare('encoder', args)
-        self.summary_ffn = ReformerDecoderSubLayer(args, is_ffn=True) if args.summary_ffn else None
+        self.summary_ffn = ReformerDecoderSubLayer(args, is_ffn=True) \
+            if args.summary_ffn and self.flow == 'parallel' else None
 
     def declare(self, sublayer_type, args):
         assert sublayer_type in ['encoder', 'decoder']
@@ -672,14 +674,14 @@ class ReformerDecoderLayer(nn.Module):
         sublayers = nn.ModuleList([])
         # add self-attention layer
         sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
-        if self.extra_encattn and sublayer_type == 'encoder':
+        if self.extra_attn and sublayer_type == 'encoder':
             # first add a ffn layer
-            sublayers.append(ReformerDecoderSubLayer(args, 'ffn2d', decoder_attn=decoder_attn))
+            sublayers.append(ReformerDecoderSubLayer(args, 'ffn', decoder_attn=decoder_attn))
             # then add a self-attention layer
             sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
         # add ffn layer
         if getattr(args, f'{sublayer_type}_ffn'):
-            sublayers.append(ReformerDecoderSubLayer(args, 'ffn2d', decoder_attn=decoder_attn))
+            sublayers.append(ReformerDecoderSubLayer(args, 'ffn', decoder_attn=decoder_attn))
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def extra_repr(self):
@@ -742,6 +744,7 @@ INCREMENTAL_MODULE_INSTANCE_ID = collections.defaultdict(lambda: 0)
 
 
 def register_module(init_fn):
+    @functools.wraps(init_fn)
     def register(self, *args, **kwargs):
         module_name = self.__class__.__name__
         # assign a unique id to each module instance
@@ -754,6 +757,7 @@ def register_module(init_fn):
 
 
 def fetch_input(forward_fn):
+    @functools.wraps(forward_fn)
     def _forward_fn(self, *args, **kwargs):
         args = [item.cuda(MODULE_DEVICE[self._id])
                 if isinstance(item, torch.Tensor) and MODULE_DEVICE[self._id] is not None else item
@@ -784,7 +788,7 @@ class ReformerDecoderSubLayer(nn.Module):
     """
 
     @register_module
-    def __init__(self, args, layer_type, decoder_attn=True, **kwargs):
+    def __init__(self, args, layer_type, decoder_attn=True):
         super().__init__()
         self.decoder_attn = decoder_attn
         assert layer_type in VALID_SUBLAYER.keys()
@@ -794,7 +798,7 @@ class ReformerDecoderSubLayer(nn.Module):
         self.relu_dropout = args.relu_dropout
         self.normalize_before = args.decoder_normalize_before
 
-        self.customize_forward = VALID_SUBLAYER[self.layer_type](self, args, kwargs)
+        self.customize_forward = VALID_SUBLAYER[self.layer_type](self, args)
 
         self.layer_norm = LayerNorm(self.embed_dim)
 
@@ -829,8 +833,8 @@ class ReformerDecoderSubLayer(nn.Module):
     def make_generation_fast_(self, need_attn=False, **kwargs):
         self.need_attn = need_attn
 
-    @register_sublayer('ffn2d')
-    def ffn(self, args, kwargs):
+    @register_sublayer('ffn')
+    def ffn(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
 
@@ -844,7 +848,7 @@ class ReformerDecoderSubLayer(nn.Module):
         return forward
 
     @register_sublayer('attn2d')
-    def attn(self, args, kwargs):
+    def attn2d(self, args):
         self.self_attn = MultiheadAttention2D(
             self.embed_dim, args.decoder_attention_heads,
             dropout=args.attention_dropout,
@@ -931,7 +935,7 @@ def base_architecture(args):
     args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'max')
     args.flow = getattr(args, 'flow', 'sequential')
     args.summary_ffn = getattr(args, 'summary_ffn', False)
-    args.extra_encattn = getattr(args, 'extra_encattn', False)
+    args.extra_attn = getattr(args, 'extra_attn', False)
 
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
     args.decoder_model_dim = getattr(args, 'decoder_model_dim',
