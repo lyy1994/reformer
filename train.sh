@@ -25,7 +25,7 @@ other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_e256_m256_l10_avg_attn_normb_encffn_dropout01_attndrop01_decay0_share_opt
+tag=reformer_e256_m256_l6_avg_attn_normb_encffn_dropout01_attndrop01_extra_share_encoder_opt
 
 
 
@@ -74,12 +74,16 @@ $data_dir/$dataset
 --flow sequential
 --scaling mean
 --decoder-normalize-before
---decoder-layers 10
+--decoder-layers 6
 --encoder-ffn
 --attention-dropout 0.1
 --relu-dropout 0
 --dropout 0.1
 --share-decoder-input-output-embed
+--extra-attn
+
+--transformer-encoder
+--encoder-normalize-before
 
 --distributed-world-size 1
 --model-parallelism

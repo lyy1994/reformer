@@ -30,7 +30,7 @@ other_options="--quiet --remove-bpe --model-parallelism"
 
 ######## models (default) ########
 # must exist
-tag=reformer_e256_m256_l10_avg_attn_normb_encffn_dropout01_attndrop01_decay0_share_opt
+tag=reformer_e256_m256_l6_avg_attn_normb_encffn_dropout01_attndrop01_extra_share_encoder_opt
 # used for specific model file
 model_file=checkpoint_best.pt
 # used to specify log name
