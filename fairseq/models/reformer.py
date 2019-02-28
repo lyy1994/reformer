@@ -126,10 +126,8 @@ class ReformerModel(FairseqModel):
                             help='apply ffn after decoder self-attention')
         parser.add_argument('--extra-attn', action='store_true',
                             help='apply an additional encoder self-attention')
-        parser.add_argument('--inside-reduce', action='store_true',
-                            help='apply dimension reduction to each layer block')
-        parser.add_argument('--reduce-before', action='store_true',
-                            help='apply dimension reduction (if enabled) to the beginning of each layer block')
+        parser.add_argument('--light-attn', action='store_true',
+                            help='use 1D attention instead of 2D version for decoder self-attention')
         parser.add_argument('--transformer-encoder', action='store_true',
                             help='apply the transformer encoder before the reformer decoder')
 
@@ -664,28 +662,25 @@ class ReformerDecoderLayer(nn.Module):
         self.flow = args.flow
         self.scaling = VALID_SCALING[args.scaling](2.)
         self.extra_attn = args.extra_attn
-        self.reduce_before = args.reduce_before
+        self.light_attn = args.light_attn
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
-        if self.reduce_before:
-            self.reducer = ReformerDecoderSubLayer(args, 'reduce') \
-                if args.inside_reduce else None
         self.declare('decoder', args)
         if not self.no_encoder_attn:
             self.declare('encoder', args)
         self.summary_ffn = ReformerDecoderSubLayer(args, 'ffn') \
             if args.summary_ffn and self.flow == 'parallel' else None
-        if not self.reduce_before:
-            self.reducer = ReformerDecoderSubLayer(args, 'reduce') \
-                if args.inside_reduce else None
 
     def declare(self, sublayer_type, args):
         assert sublayer_type in ['encoder', 'decoder']
         decoder_attn = True if sublayer_type == 'decoder' else False
         sublayers = nn.ModuleList([])
         # add self-attention layer
-        sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
-        if self.extra_attn and sublayer_type == 'encoder':
+        if self.light_attn and decoder_attn:
+            sublayers.append(ReformerDecoderSubLayer(args, 'attn1d', decoder_attn=decoder_attn))
+        else:
+            sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
+        if self.extra_attn and not decoder_attn:
             # first add a ffn layer
             sublayers.append(ReformerDecoderSubLayer(args, 'ffn', decoder_attn=decoder_attn))
             # then add a self-attention layer
@@ -709,16 +704,10 @@ class ReformerDecoderLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
-        if self.reducer is not None and self.reduce_before:
-            x, _ = self.reducer(x, encoder_padding_mask, incremental_state,
-                                self_attn_mask, self_attn_padding_mask)
         x, attn = VALID_FLOW[self.flow](self, x, encoder_padding_mask, incremental_state,
                                         self_attn_mask, self_attn_padding_mask)
         if self.summary_ffn is not None:
             x, _ = self.summary_ffn(x, None, None)
-        if self.reducer is not None and not self.reduce_before:
-            x, _ = self.reducer(x, encoder_padding_mask, incremental_state,
-                                self_attn_mask, self_attn_padding_mask)
         return x, attn
 
     @register_flow('parallel')
@@ -888,24 +877,36 @@ class ReformerDecoderSubLayer(nn.Module):
 
         return forward
 
-    @register_sublayer('reduce')
-    def reduce(self, args):
-        self.reducer = Reducer(args.decoder_output_layer, True, args)
-        self.fc = Linear(self.embed_dim, self.embed_dim)
-
+    @register_sublayer('attn1d')
+    def attn1d(self, args):
+        self.reducer = Reducer(args.decoder_output_layer, self.decoder_attn, args)
+        self.self_attn = MultiheadAttention(
+            self.embed_dim, args.decoder_attention_heads,
+            dropout=args.attention_dropout,
+        )
+        self.need_attn = False
         # each sublayer should end with a linear transformation
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
-            # x: T x B x C if reduce_src else T x S x B x C
+            # x: T x B x C if decoder_attn else T x S x B x C
+            # TODO: additional dropout is required before reducer
             x = self.reducer(
                 x,
                 encoder_padding_mask,
                 incremental_state=incremental_state,
             )
-            # TODO: additional dropout is required before fc
-            x = self.fc(x)
-            x = x.unsqueeze(1)
+            x, attn = self.self_attn(
+                query=x,
+                key=x,
+                value=x,
+                key_padding_mask=self_attn_padding_mask if self.decoder_attn else encoder_padding_mask,
+                incremental_state=incremental_state,
+                need_weights=(not self.training and self.need_attn),
+                attn_mask=self_attn_mask if self.decoder_attn else None,
+            )
+            if self.decoder_attn:
+                x = x.unsqueeze(1)
             return x, None
 
         return forward
@@ -975,8 +976,7 @@ def base_architecture(args):
     args.flow = getattr(args, 'flow', 'sequential')
     args.summary_ffn = getattr(args, 'summary_ffn', False)
     args.extra_attn = getattr(args, 'extra_attn', False)
-    args.inside_reduce = getattr(args, 'inside_reduce', False)
-    args.reduce_before = getattr(args, 'reduce_before', False)
+    args.light_attn = getattr(args, 'light_attn', False)
 
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
     args.decoder_model_dim = getattr(args, 'decoder_model_dim',
