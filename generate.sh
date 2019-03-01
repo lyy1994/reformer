@@ -34,7 +34,7 @@ tag=reformer_e256_m256_l6_avg_attn_normb_encffn_dropout01_attndrop01_extra_share
 # used for specific model file
 model_file=checkpoint_best.pt
 # used to specify log name
-log_file=generate.log
+log_file=$datatype.log
 
 ######## evaluation (default) ########
 # evaluation or just decoding
