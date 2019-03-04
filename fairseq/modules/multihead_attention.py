@@ -213,7 +213,7 @@ class MultiheadAttention(nn.Module):
         input_buffer = self._get_input_buffer(incremental_state)
         if input_buffer is not None:
             for k in input_buffer.keys():
-                input_buffer[k] = input_buffer[k].index_select(1, new_order)
+                input_buffer[k] = input_buffer[k].index_select(1, new_order.to(input_buffer[k].device))
             self._set_input_buffer(incremental_state, input_buffer)
 
     def _get_input_buffer(self, incremental_state):
