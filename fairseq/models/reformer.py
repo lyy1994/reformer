@@ -192,6 +192,8 @@ class ReformerModel(FairseqModel):
             # starting from N implies making extra N sublayers space in the first device (embeddings, softmax, encoder)
             sublayer_id = args.pseudo_sublayers
             sublayers_per_device = math.ceil((nsublayers + sublayer_id) / args.model_parallelism_world_size)
+            last_device = args.model_parallelism_world_size - 1 if nsublayers >= args.model_parallelism_world_size \
+                else nsublayers - 1
             names, devices = ['module name'], ['device']
             for name, module in model.named_modules(prefix='reformer'):
                 # we only distribute sublayers to different GPU
@@ -204,6 +206,14 @@ class ReformerModel(FairseqModel):
                     names.append(name)
                     devices.append(f'cuda:{MODULE_DEVICE[module._id]}')
                     sublayer_id += 1
+                # we push the dimension reduction to the last GPU (with potentially larger space)
+                # to avoid communication overhead (as well as the last layer norm)
+                if isinstance(module, ReformerOutputLayer):
+                    module.cuda(last_device)
+                    names.append(name)
+                    devices.append(f'cuda:{last_device}')
+                if name == 'reformer.decoder.layer_norm':
+                    module.cuda(last_device)
             if args.model_parallelism_debug:
                 name_width = max([len(e) for e in names])
                 device_width = max([len(e) for e in devices])
@@ -541,15 +551,15 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             )
             inner_states.append(x)
 
-        # push the result to where softmax/embeddings hosted
-        x = x.to(self.embed_tokens.weight.device)
-
         if self.normalize:
             x = self.layer_norm(x)
 
         # T x S x B x C -> T x B x C
         # TODO: output_layer after project_out_dim
         x = self.output_layer(x, encoder_out['encoder_padding_mask'] if encoder_out is not None else None)
+
+        # push the result to where softmax/embeddings hosted
+        x = x.to(self.embed_tokens.weight.device)
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
@@ -625,6 +635,8 @@ class ReformerOutputLayer(nn.Module):
     def forward(self, x, encoder_padding_mask):
         # since reduction happens after layer_norm, additional layer_norm might be required after the
         # reduction, especially for those reduction variants that does not preserve output scale
+        if encoder_padding_mask is not None:
+            encoder_padding_mask = encoder_padding_mask.to(x.device)
         return self.reducer(x, encoder_padding_mask)
 
 
@@ -769,7 +781,7 @@ def fetch_input(forward_fn):
                 if isinstance(item, torch.Tensor) and MODULE_DEVICE[self._id] is not None else item
                 for item in args]
         kwargs = {key: value.cuda(MODULE_DEVICE[self._id])
-        if isinstance(value, torch.Tensor) and MODULE_DEVICE[self._id] is not None else value
+                  if isinstance(value, torch.Tensor) and MODULE_DEVICE[self._id] is not None else value
                   for key, value in kwargs.items()}
         return forward_fn(self, *args, **kwargs)
 
