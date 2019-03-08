@@ -135,14 +135,16 @@ class Reducer(nn.Module):
     @register_reducer('attn')
     def attn(self, flags, *args, **kwargs):
         """
-        Reduce the given dimension based on the distribution computed by an affine transformation.
+        Reduce the given dimension based on the distribution computed by an affine transformation
+        (compute attention similar to multi-hop with nhop=model_dim
+        but apply attention similar to multi-head with nhead=model_dim).
         :param flags: Namespace
         :param args: Tuple
         :param kwargs: Dictionary
         :return: Callable
         """
         self.weights = Parameter(torch.Tensor(flags.decoder_model_dim, flags.decoder_model_dim))
-        nn.init.xavier_uniform_(self.weights)
+        nn.init.normal_(self.weights, mean=0, std=flags.decoder_model_dim ** -0.5)
 
         def reduce_src(x, mask, incremental_state=None):
             """
@@ -222,8 +224,8 @@ class Reducer(nn.Module):
 
         return reduce_src if self.reduce_src else reduce_tgt
 
-    @register_reducer('add-attn')
-    def add_attn(self, flags, *args, **kwargs):
+    @register_reducer('linear')
+    def linear(self, flags, *args, **kwargs):
         """
         Reduce the given dimension based on the distribution computed by an affine transformation.
         :param flags: Namespace
@@ -287,10 +289,10 @@ class Reducer(nn.Module):
 
         return reduce_src if self.reduce_src else reduce_tgt
 
-    @register_reducer('add-attn-v2')
-    def add_attn_v2(self, flags, *args, **kwargs):
+    @register_reducer('ffn')
+    def ffn(self, flags, *args, **kwargs):
         """
-        Reduce the given dimension based on the distribution computed by an affine transformation.
+        Reduce the given dimension based on the distribution computed by an feedforward network.
         :param flags: Namespace
         :param args: Tuple
         :param kwargs: Dictionary
@@ -352,6 +354,51 @@ class Reducer(nn.Module):
             # B * S x in_len x C -> out_len x S x B x C
             x = torch.bmm(prob, x).view(B, S, out_len, C).transpose(0, 2)
             return x
+
+        return reduce_src if self.reduce_src else reduce_tgt
+
+    @register_reducer('avg')
+    def avg(self, *args, **kwargs):
+        """
+        Average all elements over the given dimension.
+        :param args: Tuple
+        :param kwargs: Dictionary
+        :return: Callable
+        """
+
+        def reduce_src(x, mask, incremental_state=None):
+            """
+            Customized forward function
+            :param x: torch.FloatTensor, T x S x B x C
+            :param mask: torch.ByteTensor, B x S, masked elements indicated by 1
+            :param incremental_state: Dictionary
+            :return: torch.FloatTensor, T x B x C
+            """
+            # T x S x B x C
+            if mask is not None:
+                lengths = (1. - mask.float()).sum(dim=1).unsqueeze(0).unsqueeze(-1)
+                mask = mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1)
+                x = x.masked_fill(
+                    mask,
+                    0,
+                )
+            else:
+                lengths = x.size(1)
+            # T x B x C
+            x = x.sum(dim=1) / lengths
+            # common nan source: -inf * 0
+            assert torch.isnan(x).byte().any() == 0
+            return x
+
+        def reduce_tgt(x, mask, incremental_state=None):
+            """
+            Customized forward function
+            :param x: torch.FloatTensor, T x S x B x C
+            :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
+            :param incremental_state: Dictionary
+            :return: torch.FloatTensor, T x S x B x C
+            """
+            raise NotImplementedError(f'{self.method} consumes too much memory')
 
         return reduce_src if self.reduce_src else reduce_tgt
 
