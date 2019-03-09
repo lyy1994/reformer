@@ -1,7 +1,7 @@
 import unittest
 import torch
 
-from fairseq.modules.multihead_attention_2d import MultiheadAttention2D
+from fairseq.modules.separable_attention import SeparableAttention
 
 
 class TestMultiheadAttention2D(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestMultiheadAttention2D(unittest.TestCase):
         time = 1
         batch = 1
 
-        attn = MultiheadAttention2D(8, head)
+        attn = SeparableAttention(8, head)
         # Time x Source x Batch x Channel
         # 3 x 5 x 2 x 8
         query = torch.randn(3, 5, 2, 8)
@@ -110,7 +110,7 @@ class TestMultiheadAttention2D(unittest.TestCase):
         time = 1
         batch = 1
 
-        attn = MultiheadAttention2D(8, head, tgt_attn=False)
+        attn = SeparableAttention(8, head, tgt_attn=False)
         # Time x Source x Batch x Channel
         # 3 x 5 x 2 x 8
         query = torch.randn(3, 5, 2, 8)

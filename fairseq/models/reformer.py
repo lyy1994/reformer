@@ -17,7 +17,7 @@ from fairseq import options
 from fairseq import utils
 
 from fairseq.modules import (
-    AdaptiveSoftmax, LearnedPositionalEmbedding, MultiheadAttention2D,
+    AdaptiveSoftmax, LearnedPositionalEmbedding, SeparableAttention,
     MultiheadAttention, SinusoidalPositionalEmbedding, Reducer
 )
 
@@ -853,7 +853,7 @@ class ReformerDecoderSubLayer(nn.Module):
 
     @register_sublayer('attn2d')
     def attn2d(self, args):
-        self.self_attn = MultiheadAttention2D(
+        self.self_attn = SeparableAttention(
             self.embed_dim, args.decoder_attention_heads,
             dropout=args.attention_dropout,
             tgt_attn=self.decoder_attn,

@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from fairseq import utils
 
 
-class MultiheadAttention2D(nn.Module):
+class SeparableAttention(nn.Module):
     """Multi-headed attention with 2D inputs (src x tgt).
     """
 
