@@ -547,12 +547,12 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             )
             inner_states.append(x)
 
-        if self.normalize:
-            x = self.layer_norm(x)
-
         # T x S x B x C -> T x B x C
         # TODO: output_layer after project_out_dim
         x = self.output_layer(x, encoder_out['encoder_padding_mask'] if encoder_out is not None else None)
+
+        if self.normalize:
+            x = self.layer_norm(x)
 
         # push the result to where softmax/embeddings hosted
         x = x.to(self.embed_tokens.weight.device)
@@ -625,7 +625,8 @@ class ReformerOutputLayer(nn.Module):
 
     def __init__(self, args):
         super().__init__()
-        # TODO: more reduction functions
+        self.normalize_before = args.decoder_normalize_before
+        self.layer_norm = LayerNorm(args.decoder_model_dim)
         self.reducer = Reducer(args.decoder_output_layer, True, args)
 
     def forward(self, x, encoder_padding_mask):
@@ -633,7 +634,17 @@ class ReformerOutputLayer(nn.Module):
         # reduction, especially for those reduction variants that does not preserve output scale
         if encoder_padding_mask is not None:
             encoder_padding_mask = encoder_padding_mask.to(x.device)
-        return self.reducer(x, encoder_padding_mask)
+        x = self.maybe_layer_norm(self.layer_norm, x, before=True)
+        x = self.reducer(x, encoder_padding_mask)
+        x = self.maybe_layer_norm(self.layer_norm, x, after=True)
+        return x
+
+    def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
+        assert before ^ after
+        if after ^ self.normalize_before:
+            return layer_norm(x)
+        else:
+            return x
 
 
 VALID_FLOW = {}
