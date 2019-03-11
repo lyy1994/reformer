@@ -4,7 +4,7 @@ import torch
 from fairseq.modules.separable_attention import SeparableAttention
 
 
-class TestMultiheadAttention2D(unittest.TestCase):
+class TestSeparableAttention(unittest.TestCase):
 
     def test_dec_self_attn(self):
         print(f"{self.test_dec_self_attn.__name__} is testing......")
