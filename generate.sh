@@ -3,19 +3,16 @@ set -e
 
 ######## hardware (default) ########
 # devices (-1 for cpu)
-devices=0,1,2,3,4,5,6,7
+devices=0,1,2,3
 
 ######## dataset (default) ########
 # language: zh-en or en-zh
 s=de
 t=en
-
-# problems
-problems=iwslt14
-
 # used for specific data file
 data_dir=../data/data-bin
-
+# dataset
+dataset=iwslt14.tokenized.de-en
 # datatype=SPLIT, e.g. train, valid, test
 datatype=test
 
@@ -30,9 +27,11 @@ other_options="--quiet --remove-bpe --model-parallelism"
 
 ######## models (default) ########
 # must exist
-tag=reformer_e256_m256_l6_avg_attn_normb_encffn_dropout01_attndrop01_extra_share_encoder_opt
+tag=reformer_e256_l6_avg_attn_normb_encffn_dropout02_attndrop01_ffn2048_share_opt_decay
 # used for specific model file
 model_file=checkpoint_best.pt
+# used for specific model directory
+output_dir=../checkpoints/${tag}
 # used to specify log name
 log_file=$datatype.log
 
@@ -55,7 +54,7 @@ while getopts a:b:cd:e: opt; do
       model_file=$OPTARG
       ;;
     c)
-      echo -e "\033[33menable external evaluation by -d\033[0m"
+      echo -e "\033[33menable external evaluation by -c\033[0m"
       is_eval=1
       ;;
     d)
@@ -73,16 +72,6 @@ while getopts a:b:cd:e: opt; do
 done
 # if we want to set default value for a variable defined in the while loop, try the following code ("" required for string)
 # new_var=${new_var:-default}
-
-######## dataset (no reset) ########
-# language: zh-en or en-zh
-lang=${s}"-"${t}
-# dataset
-dataset=${problems}.tokenized.${lang}
-
-######## models (no reset) ########
-# used for specific model file
-output_dir=../checkpoints/${tag}
 
 ######## evaluation (no reset) ########
 # used for specific output file

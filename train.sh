@@ -3,29 +3,26 @@ set -e
 
 ######## hardware ########
 # devices
-devices=0,1,2,3,4,5,6,7
+devices=0,1,2,3
 
 ######## dataset ########
 # language: zh-en or en-zh
 s=de
 t=en
-lang=${s}"-"${t}
 # dataset
-dataset=iwslt14.tokenized.${lang}
+dataset=iwslt14.tokenized.de-en
 
 ######## parameters ########
-# which model
-model=reformer
 # which hparams 
-param=${model}"_iwslt_"${s}"_"${t}
+param=reformer_iwslt_de_en
 # defualt is 103k. About 10 epochs for 700w CWMT
-max_update=25000
+max_update=40000
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
 other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_e256_m256_l6_avg_attn_normb_encffn_dropout01_attndrop01_extra_share_encoder_opt
+tag=reformer_e256_l6_avg_attn_normb_encffn_dropout02_attndrop01_ffn2048_share_opt_decay
 
 
 
@@ -67,7 +64,7 @@ $data_dir/$dataset
 
 --encoder-embed-dim 256
 --decoder-embed-dim 256
---decoder-ffn-embed-dim 1024
+--decoder-ffn-embed-dim 2048
 --decoder-attention-heads 4
 --decoder-input-layer add
 --decoder-output-layer attn
@@ -78,12 +75,8 @@ $data_dir/$dataset
 --encoder-ffn
 --attention-dropout 0.1
 --relu-dropout 0
---dropout 0.1
+--dropout 0.2
 --share-decoder-input-output-embed
---extra-attn
-
---transformer-encoder
---encoder-normalize-before
 
 --distributed-world-size 1
 --model-parallelism
@@ -98,7 +91,7 @@ $data_dir/$dataset
 
 --criterion label_smoothed_cross_entropy
 --label-smoothing 0.1
---weight-decay 0
+--weight-decay 0.0001
 
 --lr-scheduler inverse_sqrt
 --warmup-updates 8000
