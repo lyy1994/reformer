@@ -35,7 +35,9 @@ def write_tensorboard(args, step, content, is_training=True):
 def main(args):
     if args.max_tokens is None:
         args.max_tokens = 6000
-    print(args)
+    width = max(map(lambda x: len(x), args.__dict__.keys()))
+    for k, v in sorted(args.__dict__.items(), key=lambda x: x[0]):
+        print(f'{k: <{width}} = {v}')
     # use tensor board
     try:
         from tensorboardX import SummaryWriter
@@ -61,7 +63,7 @@ def main(args):
     print(model)
     criterion = task.build_criterion(args)
     print('| model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
-    print('| num. model params: {}'.format(sum(p.numel() for p in model.parameters())))
+    print('| num. model params: {:,}'.format(sum(p.numel() for p in model.parameters())))
 
     # Make a dummy batch to (i) warm the caching allocator and (ii) as a
     # placeholder DistributedDataParallel when there's an uneven number of
@@ -80,35 +82,36 @@ def main(args):
         args.max_sentences,
     ))
 
-    # Print parameters' name, shape and size
-    total = sum(p.numel() for p in model.parameters())
-    names, shapes, sizes, percents, devices = ["parameter name"], ["shape"], ["size"], ["percent"], ["device"]
-    for name, param in model.named_parameters():
-        names.append(name)
-        shapes.append(str(list(param.size())))
-        sizes.append(str(param.numel()))
-        percents.append("%.2f%%" % (param.numel() / float(total) * 100))
-        devices.append(str(param.device))
-    name_width = max([len(e) for e in names])
-    shape_width = max([len(e) for e in shapes])
-    size_width = max([len(e) for e in sizes])
-    percent_width = max([len(e) for e in percents])
-    device_width = max([len(e) for e in devices])
-    separate_line = '|' + '-' * (name_width + 2) + '|' + '-' * (shape_width + 2) + \
-                    '|' + '-' * (size_width + 2) + '|' + '-' * (percent_width + 2) + \
-                    '|' + '-' * (device_width + 2) + '|'
-    print(separate_line)
-    for i, (name, shape, size, percent, device) in enumerate(zip(names, shapes, sizes, percents, devices)):
-        if i == 0:
-            print(f"| {name: ^{name_width}} | {shape: ^{shape_width}} "
-                  f"| {size: ^{size_width}} | {percent: ^{percent_width}} "
-                  f"| {device: ^{device_width}} |")
-            print(separate_line)
-        else:
-            print(f"| {name: <{name_width}} | {shape: <{shape_width}} "
-                  f"| {size: <{size_width}} | {percent: >{percent_width}} "
-                  f"| {device: <{device_width}} |")
-    print(separate_line)
+    if args.model_parallelism:
+        # Print parameters' name, shape and size
+        total = sum(p.numel() for p in model.parameters())
+        names, shapes, sizes, percents, devices = ["parameter name"], ["shape"], ["size"], ["percent"], ["device"]
+        for name, param in model.named_parameters():
+            names.append(name)
+            shapes.append(str(list(param.size())))
+            sizes.append(str(param.numel()))
+            percents.append("%.2f%%" % (param.numel() / float(total) * 100))
+            devices.append(str(param.device))
+        name_width = max([len(e) for e in names])
+        shape_width = max([len(e) for e in shapes])
+        size_width = max([len(e) for e in sizes])
+        percent_width = max([len(e) for e in percents])
+        device_width = max([len(e) for e in devices])
+        separate_line = '|' + '-' * (name_width + 2) + '|' + '-' * (shape_width + 2) + \
+                        '|' + '-' * (size_width + 2) + '|' + '-' * (percent_width + 2) + \
+                        '|' + '-' * (device_width + 2) + '|'
+        print(separate_line)
+        for i, (name, shape, size, percent, device) in enumerate(zip(names, shapes, sizes, percents, devices)):
+            if i == 0:
+                print(f"| {name: ^{name_width}} | {shape: ^{shape_width}} "
+                      f"| {size: ^{size_width}} | {percent: ^{percent_width}} "
+                      f"| {device: ^{device_width}} |")
+                print(separate_line)
+            else:
+                print(f"| {name: <{name_width}} | {shape: <{shape_width}} "
+                      f"| {size: <{size_width}} | {percent: >{percent_width}} "
+                      f"| {device: <{device_width}} |")
+        print(separate_line)
 
     # Initialize dataloader
     epoch_itr = task.get_batch_iterator(
