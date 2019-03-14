@@ -108,8 +108,8 @@ if [ -n "$other_hparams" ]; then
 fi
 
 echo -e "\033[34mrun command: "${cmd}"\033[0m"
-# start training
-cmd="CUDA_VISIBLE_DEVICES=$devices nohup "${cmd}" > $output_dir/train.log 2>&1 &"
+# start training, >> for preserve content that already existed (continue training)
+cmd="CUDA_VISIBLE_DEVICES=$devices nohup "${cmd}" >> $output_dir/train.log 2>&1 &"
 eval $cmd
 
 # monitor training log
