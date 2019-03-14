@@ -188,8 +188,8 @@ class ReformerModel(FairseqModel):
             # starting from N implies making extra N sublayers space in the first device (embeddings, softmax, encoder)
             sublayer_id = args.pseudo_sublayers
             sublayers_per_device = math.ceil((nsublayers + sublayer_id) / args.model_parallelism_world_size)
-            last_device = args.model_parallelism_world_size - 1 if nsublayers >= args.model_parallelism_world_size \
-                else nsublayers - 1
+            last_device = math.ceil((nsublayers + sublayer_id) / sublayers_per_device) - 1 \
+                if nsublayers >= args.model_parallelism_world_size else nsublayers - 1
             names, devices = ['module name'], ['device']
             for name, module in model.named_modules(prefix='reformer'):
                 # we only distribute sublayers to different GPU
