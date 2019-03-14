@@ -37,9 +37,10 @@ log_file=$datatype.log
 
 ######## evaluation (default) ########
 # evaluation or just decoding
-is_eval=0
+is_eval=1
 # now available for multi-bleu.perl only
 eval_tool=../toolkit/multi-bleu.perl
+eval_opts="-lc"
 
 ######## args (reset default) ########
 # use args to reset default settings
@@ -80,9 +81,12 @@ if [ ${is_eval} -eq 1 ]; then
 else
   output_file=
 fi
-# for single reference evaluation
-ref_file_bpe=${data_dir%%/data-bin*}/${dataset}/${datatype}.${t}
-ref_file=${output_dir}/${datatype}.${t}
+# for multiple references evaluation
+ref_file_bpe=`find ${data_dir%%/data-bin*}/${dataset} -name ${datatype}[0-9]*.${t}`
+if [ -z "$ref_file_bpe" ]; then
+  ref_file_bpe=${data_dir%%/data-bin*}/${dataset}/${datatype}.${t}
+fi
+ref_file=${output_dir}/${datatype}*.${t}
 
 
 # save generate.sh
@@ -128,11 +132,6 @@ fi
 
 if [ ${is_eval} -eq 1 ]
 then
-  # remove bpe
-  cp ${ref_file_bpe} ${ref_file}
-  sed -i s'/@@ //g' ${ref_file}
-  sed -i s'/@@ //g' ${output_file}
-
   # check eval_tool
   if [ -n "$eval_tool" ]; then
 	echo -e "\033[33musing evaluation tool: $eval_tool\033[0m"
@@ -141,9 +140,17 @@ then
     exit -1
   fi
 
+  echo -e "detected references:\n$ref_file_bpe" | tee -a -i $output_dir/$log_file
+
+  # remove bpe
+  cp ${ref_file_bpe} ${output_dir}
+  sed -i s'/@@ //g' ${ref_file}
+  sed -i s'/@@ //g' ${output_file}
+
   # run eval_tool
-  echo -e "\033[34mrun command: perl $eval_tool $ref_file < $output_file\033[0m"
-  perl $eval_tool $ref_file < $output_file
+  eval_cmd="perl $eval_tool $eval_opts $ref_file < $output_file"
+  echo -e "\033[34mrun command: $eval_cmd\033[0m"
+  eval $eval_cmd | tee -a -i $output_dir/$log_file
 
   rm $ref_file
 
