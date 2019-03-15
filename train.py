@@ -82,7 +82,7 @@ def main(args):
         args.max_sentences,
     ))
 
-    if args.model_parallelism:
+    if args.model_parallelism_debug:
         # Print parameters' name, shape and size
         total = sum(p.numel() for p in model.parameters())
         names, shapes, sizes, percents, devices = ["parameter name"], ["shape"], ["size"], ["percent"], ["device"]
