@@ -94,9 +94,9 @@ cp `pwd`/generate.sh $output_dir
 
 if [ -n "$ensemble" ]; then
   # start ensemble
-  model_file=model.pt
+  model_file=model_ensemble${ensemble}.pt
   echo -e "\033[34mensemble the last $ensemble checkpoints from $output_dir to $output_dir/$model_file\033[0m"
-  if [ -n "$output_dir/$model_file" ]; then
+  if [ -f "$output_dir/$model_file" ]; then
     echo -e "\033[33mWarning: override $output_dir/$model_file\033[0m"
   fi
   PYTHONPATH=`pwd` python3 scripts/average_checkpoints.py \
