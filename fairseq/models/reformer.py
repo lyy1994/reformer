@@ -554,12 +554,12 @@ class ReformerOutputLayer(nn.Module):
 VALID_FLOW = {}
 
 
-def register_flow(name):
-    def register_flow_fn(fn):
-        VALID_FLOW[name] = fn
+def register_to(name: str, mapping: dict):
+    def wrapper(fn):
+        mapping[name] = fn
         return fn
 
-    return register_flow_fn
+    return wrapper
 
 
 class ReformerDecoderLayer(nn.Module):
@@ -623,7 +623,7 @@ class ReformerDecoderLayer(nn.Module):
             x, _ = self.summary_ffn(x, None, None)
         return x, attn
 
-    @register_flow('parallel')
+    @register_to('parallel', VALID_FLOW)
     def parallel(self, x, encoder_padding_mask, incremental_state,
                  self_attn_mask=None, self_attn_padding_mask=None):
         dec_out, dec_attn = self.run('decoder', x, encoder_padding_mask, incremental_state,
@@ -635,7 +635,7 @@ class ReformerDecoderLayer(nn.Module):
         out = (dec_out.to(enc_out.device) + enc_out) * self.scaling.to(enc_out.device)
         return out, enc_attn
 
-    @register_flow('sequential')
+    @register_to('sequential', VALID_FLOW)
     def sequential(self, x, encoder_padding_mask, incremental_state,
                    self_attn_mask=None, self_attn_padding_mask=None):
         x, dec_attn = self.run('decoder', x, encoder_padding_mask, incremental_state,
@@ -692,14 +692,6 @@ def fetch_input(forward_fn):
 VALID_SUBLAYER = {}
 
 
-def register_sublayer(name):
-    def register_sublayer_fn(fn):
-        VALID_SUBLAYER[name] = fn
-        return fn
-
-    return register_sublayer_fn
-
-
 class ReformerDecoderSubLayer(nn.Module):
     """
     Decoder sublayer, performs only one attention/ffn followed with add residual
@@ -752,7 +744,7 @@ class ReformerDecoderSubLayer(nn.Module):
     def make_generation_fast_(self, need_attn=False, **kwargs):
         self.need_attn = need_attn
 
-    @register_sublayer('ffn')
+    @register_to('ffn', VALID_SUBLAYER)
     def ffn(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
@@ -766,7 +758,7 @@ class ReformerDecoderSubLayer(nn.Module):
 
         return forward
 
-    @register_sublayer('attn2d')
+    @register_to('attn2d', VALID_SUBLAYER)
     def attn2d(self, args):
         self.self_attn = SeparableAttention(
             self.embed_dim, args.decoder_attention_heads,
