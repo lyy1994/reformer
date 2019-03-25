@@ -79,7 +79,7 @@ $data_dir/$dataset
 --share-decoder-input-output-embed
 
 --distributed-world-size 1
---model-parallelism
+--model-parallelism-world-size 4
 --model-parallelism-debug
 
 --no-progress-bar

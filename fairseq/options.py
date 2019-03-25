@@ -199,11 +199,9 @@ def add_distributed_training_args(parser):
 
 def add_model_parallelism_args(parser):
     group = parser.add_argument_group('Model Parallelism')
-    group.add_argument('--model-parallelism', action='store_true', help='enable model parallelism')
     group.add_argument('--model-parallelism-debug', action='store_true', help='show sublayer-device info')
-    group.add_argument('--model-parallelism-world-size', type=int, metavar='N',
-                       default=torch.cuda.device_count(),
-                       help='total number of GPUs across all nodes (default: all visible GPUs)')
+    group.add_argument('--model-parallelism-world-size', type=int, metavar='N', default=1,
+                       help='number of GPUs per model instance (default: 1)')
     group.add_argument('--pseudo-sublayers', type=int, metavar='N', default=0,
                        help='add pseudo sublayers to make room for both '
                             'embeddings and softmax in the first device')

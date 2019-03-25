@@ -169,7 +169,7 @@ class ReformerModel(FairseqModel):
 
     @staticmethod
     def model_parallelism(model, args):
-        if not args.model_parallelism:
+        if args.model_parallelism_world_size == 1:
             return model
         else:
             # we first put all parameters and buffers to a single GPU
