@@ -80,7 +80,7 @@ $data_dir/$dataset
 
 --distributed-world-size 1
 --model-parallelism-world-size 4
---model-parallelism-debug
+--debug
 
 --no-progress-bar
 --log-interval 100

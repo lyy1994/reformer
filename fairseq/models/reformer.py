@@ -200,7 +200,7 @@ class ReformerModel(FairseqModel):
                     devices.append(f'cuda:{last_device}')
                 if name == 'reformer.decoder.layer_norm':
                     module.cuda(last_device)
-            if args.model_parallelism_debug:
+            if args.debug:
                 name_width = max([len(e) for e in names])
                 device_width = max([len(e) for e in devices])
                 separate_line = '|' + '-' * (name_width + 2) + '|' + '-' * (device_width + 2) + '|'
