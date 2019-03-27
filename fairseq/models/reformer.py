@@ -12,6 +12,7 @@ import functools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as ckpt
 
 from fairseq import options
 from fairseq import utils
@@ -458,7 +459,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         x = self.output_layer(x, encoder_out['encoder_padding_mask'] if encoder_out is not None else None)
 
         if self.normalize:
-            x = self.layer_norm(x)
+            x = ckpt.checkpoint(self.layer_norm, x)
 
         # push the result to where softmax/embeddings hosted
         x = x.to(self.embed_tokens.weight.device)
@@ -548,7 +549,7 @@ class ReformerOutputLayer(nn.Module):
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
         assert before ^ after
         if after ^ self.normalize_before:
-            return layer_norm(x)
+            return ckpt.checkpoint(layer_norm, x)
         else:
             return x
 
@@ -732,7 +733,7 @@ class ReformerDecoderSubLayer(nn.Module):
         x = self.maybe_layer_norm(self.layer_norm, x, before=True)
         x, attn = self.customize_forward(x, encoder_padding_mask, incremental_state,
                                          self_attn_mask, self_attn_padding_mask)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = ckpt.checkpoint(lambda h: F.dropout(h, p=self.dropout, training=self.training), x)
         x = residual + x
         x = self.maybe_layer_norm(self.layer_norm, x, after=True)
         return x, attn
@@ -740,7 +741,7 @@ class ReformerDecoderSubLayer(nn.Module):
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
         assert before ^ after
         if after ^ self.normalize_before:
-            return layer_norm(x)
+            return ckpt.checkpoint(layer_norm, x)
         else:
             return x
 
@@ -771,7 +772,7 @@ class ReformerDecoderSubLayer(nn.Module):
                     self_attn_mask, self_attn_padding_mask):
             x = self.fc1(F.relu(x))
             x = F.dropout(x, p=self.relu_dropout, training=self.training)
-            x = self.inner_layer_norm(x)
+            x = ckpt.checkpoint(self.inner_layer_norm, x)
             x = self.fc2(F.relu(x))
             return x, None
 
