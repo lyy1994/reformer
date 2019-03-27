@@ -26,8 +26,6 @@ tag=reformer_e256_l6_avg_attn_normb_encffn_dropout02_attndrop01_ffn2048_share_op
 
 
 
-# automatically set worker_gpu according to $devices
-worker_gpu=`echo "$devices" | awk '{split($0,arr,",");print length(arr)}'`
 # dir of training data
 data_dir=../data/data-bin
 # dir of models
@@ -112,5 +110,7 @@ echo -e "\033[34mrun command: "${cmd}"\033[0m"
 cmd="CUDA_VISIBLE_DEVICES=$devices nohup "${cmd}" >> $output_dir/train.log 2>&1 &"
 eval $cmd
 
+# to avoid the latency of write file
+sleep 5s
 # monitor training log
-tail -f ${output_dir}/train.log
+tail -n `wc -l ${output_dir}/train.log | awk '{print $1+1}'` -f ${output_dir}/train.log
