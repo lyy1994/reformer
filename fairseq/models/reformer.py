@@ -116,6 +116,8 @@ class ReformerModel(FairseqModel):
                             help='apply ffn after encoder self-attention')
         parser.add_argument('--decoder-ffn', action='store_true',
                             help='apply ffn after decoder self-attention')
+        parser.add_argument('--pre-activation', action='store_true',
+                            help='use pre-activation ffn implementation')
 
     @classmethod
     def build_model(cls, args, task):
@@ -198,7 +200,7 @@ class ReformerModel(FairseqModel):
                     module.cuda(last_device)
                     names.append(name)
                     devices.append(f'cuda:{last_device}')
-                if name == 'reformer.decoder.layer_norm':
+                if '.decoder.layer_norm' in name:
                     module.cuda(last_device)
             if args.debug:
                 name_width = max([len(e) for e in names])
@@ -584,12 +586,13 @@ class ReformerDecoderLayer(nn.Module):
         self.no_encoder_attn = no_encoder_attn
         self.flow = args.flow
         self.scaling = VALID_SCALING[args.scaling](2.)
+        self.act = 'preact' if args.pre_activation else 'postact'
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
         self.declare('decoder', args)
         if not self.no_encoder_attn:
             self.declare('encoder', args)
-        self.summary_ffn = ReformerDecoderSubLayer(args, 'ffn') \
+        self.summary_ffn = ReformerDecoderSubLayer(args, self.act) \
             if args.summary_ffn and self.flow == 'parallel' else None
 
     def declare(self, sublayer_type, args):
@@ -600,7 +603,7 @@ class ReformerDecoderLayer(nn.Module):
         sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
         # add ffn layer
         if getattr(args, f'{sublayer_type}_ffn'):
-            sublayers.append(ReformerDecoderSubLayer(args, 'ffn', decoder_attn=decoder_attn))
+            sublayers.append(ReformerDecoderSubLayer(args, self.act, decoder_attn=decoder_attn))
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def extra_repr(self):
@@ -744,8 +747,8 @@ class ReformerDecoderSubLayer(nn.Module):
     def make_generation_fast_(self, need_attn=False, **kwargs):
         self.need_attn = need_attn
 
-    @register_to('ffn', VALID_SUBLAYER)
-    def ffn(self, args):
+    @register_to('postact', VALID_SUBLAYER)
+    def postact(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
 
@@ -754,6 +757,22 @@ class ReformerDecoderSubLayer(nn.Module):
             x = F.relu(self.fc1(x))
             x = F.dropout(x, p=self.relu_dropout, training=self.training)
             x = self.fc2(x)
+            return x, None
+
+        return forward
+
+    @register_to('preact', VALID_SUBLAYER)
+    def preact(self, args):
+        self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
+        self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
+        self.inner_layer_norm = LayerNorm(args.decoder_ffn_embed_dim)
+
+        def forward(x, encoder_padding_mask, incremental_state,
+                    self_attn_mask, self_attn_padding_mask):
+            x = self.fc1(F.relu(x))
+            x = F.dropout(x, p=self.relu_dropout, training=self.training)
+            x = self.inner_layer_norm(x)
+            x = self.fc2(F.relu(x))
             return x, None
 
         return forward
@@ -852,6 +871,7 @@ def base_architecture(args):
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
+    args.pre_activation = getattr(args, 'pre_activation', False)
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
