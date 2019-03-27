@@ -91,7 +91,7 @@ def main(args):
             diverse_beam_groups=args.diverse_beam_groups, diverse_beam_strength=args.diverse_beam_strength,
         )
 
-    if use_cuda and not args.model_parallelism:
+    if use_cuda and args.model_parallelism_world_size == 1:
         translator.cuda()
 
     # Generate and compute BLEU score

@@ -4,6 +4,7 @@ set -e
 ######## hardware (default) ########
 # devices (-1 for cpu)
 devices=0,1,2,3
+worker_gpus=`echo "$devices" | awk '{n=split($0,arr,",");print n}'`
 
 ######## dataset (default) ########
 # language: zh-en or en-zh
@@ -23,7 +24,7 @@ lenpen=1
 # if use ensemble, set it
 ensemble=
 # dynamic options, e.g. change some default settings, '--quiet'
-other_options="--quiet --remove-bpe --model-parallelism"
+other_options="--quiet --remove-bpe --model-parallelism-world-size $worker_gpus"
 
 ######## models (default) ########
 # must exist
