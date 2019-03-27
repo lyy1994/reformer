@@ -65,6 +65,8 @@ class SequenceScorer(object):
                 model.eval()
                 decoder_out = model.forward(**net_input)
                 attn = decoder_out[1]
+                if type(attn) is dict:
+                    attn = attn['attn']
 
             probs = model.get_normalized_probs(decoder_out, log_probs=False, sample=sample).data
             if avg_probs is None:
