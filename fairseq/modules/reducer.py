@@ -9,6 +9,7 @@ import torch
 from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
+import torch.utils.checkpoint as ckpt
 
 from fairseq import utils
 
@@ -399,6 +400,77 @@ class Reducer(nn.Module):
             :return: torch.FloatTensor, T x S x B x C
             """
             raise NotImplementedError(f'{self.method} consumes too much memory')
+
+        return reduce_src if self.reduce_src else reduce_tgt
+
+    @register_reducer('se-v1')
+    def se_v1(self, flags, *args, **kwargs):
+        """
+        Reduce the given dimension based on the distribution computed by a
+        SE / Bahdanau attention / Multi-dimensional block.
+        This version uses mean pooling to obtain global feature vector as query,
+        and apply attention feature-wise instead of vector-wise.
+        :param flags: Namespace
+        :param args: Tuple
+        :param kwargs: Dictionary
+        :return: Callable
+        """
+        self.w1 = Parameter(torch.Tensor(flags.decoder_model_dim // 4, flags.decoder_model_dim))
+        self.w2 = Parameter(torch.Tensor(flags.decoder_model_dim // 4, flags.decoder_model_dim))
+        self.b = Parameter(torch.Tensor(flags.decoder_model_dim // 4))
+        nn.init.xavier_uniform_(self.w1)
+        nn.init.xavier_uniform_(self.w2)
+        nn.init.constant_(self.b, 0.)
+        self.w3 = Parameter(torch.Tensor(flags.decoder_model_dim, flags.decoder_model_dim // 4))
+        nn.init.xavier_uniform_(self.w3)
+
+        def reduce_src(x, mask, incremental_state=None):
+            """
+            Customized forward function
+            :param x: torch.FloatTensor, T x S x B x C
+            :param mask: torch.ByteTensor, B x S, masked elements indicated by 1
+            :param incremental_state: Dictionary
+            :return: torch.FloatTensor, T x B x C
+            """
+            # Squeeze
+            # mean / max pooling to obtain global features as query (here mean pooling)
+            # T x S x B x C
+            g = x
+            if mask is not None:
+                lengths = (1. - mask.float()).sum(dim=1).unsqueeze(0).unsqueeze(-1)
+                mask = mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1)
+                g = g.masked_fill(
+                    mask,
+                    0,
+                )
+            else:
+                lengths = g.size(1)
+            # T x 1 x B x C
+            g = g.sum(dim=1, keepdim=True) / lengths
+            # Excitation
+            # this implementation avoid concatenating before reduction (save memory)
+            h = F.linear(x, self.w1) + F.linear(g, self.w2, self.b)
+            h = ckpt.checkpoint(F.relu, h)
+            weights = F.linear(h, self.w3)
+            if mask is not None:
+                weights = weights.masked_fill(
+                    mask,
+                    float('-inf'),
+                )
+            prob = ckpt.checkpoint(lambda tmp: F.softmax(tmp, dim=1), weights)
+            assert torch.isnan(prob).byte().any() == 0
+            x = ckpt.checkpoint(lambda tmp1, tmp2: torch.sum(tmp1 * tmp2, dim=1), prob, x)
+            return x
+
+        def reduce_tgt(x, mask, incremental_state=None):
+            """
+            Customized forward function
+            :param x: torch.FloatTensor, T x S x B x C
+            :param mask: torch.ByteTensor, T x T, masked elements indicated by -inf
+            :param incremental_state: Dictionary
+            :return: torch.FloatTensor, T x S x B x C
+            """
+            raise NotImplementedError
 
         return reduce_src if self.reduce_src else reduce_tgt
 
