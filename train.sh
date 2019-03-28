@@ -4,6 +4,7 @@ set -e
 ######## hardware ########
 # devices
 devices=0,1,2,3
+worker_gpus=`echo "$devices" | awk '{n=split($0,arr,",");print n}'`
 
 ######## dataset ########
 # language: zh-en or en-zh
@@ -23,7 +24,8 @@ other_hparams=
 ######## required ########
 # tag is the name of your experiments
 tag=reformer_e256_l6_avg_attn_normb_encffn_dropout02_attndrop01_ffn2048_share_opt_decay
-
+# whether to continue training if experiment is already existed
+is_continue=1
 
 
 # dir of training data
@@ -33,7 +35,7 @@ output_dir=../checkpoints/${tag}
 
 if [ ! -d "$output_dir" ]; then
   mkdir -p ${output_dir}
-else
+elif [ ${is_continue} -eq 0 ]; then
   echo -e "\033[31m$output_dir exists!\033[0m"
   exit -1
 fi
@@ -77,7 +79,7 @@ $data_dir/$dataset
 --share-decoder-input-output-embed
 
 --distributed-world-size 1
---model-parallelism-world-size 4
+--model-parallelism-world-size $worker_gpus
 --debug
 
 --no-progress-bar
