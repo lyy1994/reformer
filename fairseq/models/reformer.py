@@ -117,8 +117,8 @@ class ReformerModel(FairseqModel):
                             help='apply ffn after encoder self-attention')
         parser.add_argument('--decoder-ffn', action='store_true',
                             help='apply ffn after decoder self-attention')
-        parser.add_argument('--pre-activation', action='store_true',
-                            help='use pre-activation ffn implementation')
+        parser.add_argument('--ffn', choices=VALID_FFN.keys(),
+                            help='use which ffn implementation')
 
     @classmethod
     def build_model(cls, args, task):
@@ -459,7 +459,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         x = self.output_layer(x, encoder_out['encoder_padding_mask'] if encoder_out is not None else None)
 
         if self.normalize:
-            x = ckpt.checkpoint(self.layer_norm, x)
+            x = self.layer_norm(x)
 
         # push the result to where softmax/embeddings hosted
         x = x.to(self.embed_tokens.weight.device)
@@ -549,7 +549,7 @@ class ReformerOutputLayer(nn.Module):
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
         assert before ^ after
         if after ^ self.normalize_before:
-            return ckpt.checkpoint(layer_norm, x)
+            return layer_norm(x)
         else:
             return x
 
@@ -587,13 +587,13 @@ class ReformerDecoderLayer(nn.Module):
         self.no_encoder_attn = no_encoder_attn
         self.flow = args.flow
         self.scaling = VALID_SCALING[args.scaling](2.)
-        self.act = 'preact' if args.pre_activation else 'postact'
+        self.ffn = args.ffn
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
         self.declare('decoder', args)
         if not self.no_encoder_attn:
             self.declare('encoder', args)
-        self.summary_ffn = ReformerDecoderSubLayer(args, self.act) \
+        self.summary_ffn = ReformerDecoderSubLayer(args, self.ffn) \
             if args.summary_ffn and self.flow == 'parallel' else None
 
     def declare(self, sublayer_type, args):
@@ -604,7 +604,7 @@ class ReformerDecoderLayer(nn.Module):
         sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
         # add ffn layer
         if getattr(args, f'{sublayer_type}_ffn'):
-            sublayers.append(ReformerDecoderSubLayer(args, self.act, decoder_attn=decoder_attn))
+            sublayers.append(ReformerDecoderSubLayer(args, self.ffn, decoder_attn=decoder_attn))
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def extra_repr(self):
@@ -694,6 +694,7 @@ def fetch_input(forward_fn):
 
 
 VALID_SUBLAYER = {}
+VALID_FFN = {}
 
 
 class ReformerDecoderSubLayer(nn.Module):
@@ -717,6 +718,9 @@ class ReformerDecoderSubLayer(nn.Module):
 
         self.layer_norm = LayerNorm(self.embed_dim)
 
+    def extra_repr(self):
+        return 'layer_type={}, normalize_before={},'.format(self.layer_type, self.normalize_before)
+
     @fetch_input
     def forward(self, x, encoder_padding_mask, incremental_state,
                 self_attn_mask=None, self_attn_padding_mask=None):
@@ -729,40 +733,64 @@ class ReformerDecoderSubLayer(nn.Module):
         Returns:
             encoded output of shape `(batch, src_len, embed_dim)`
         """
-        residual = x
-        x = self.maybe_layer_norm(self.layer_norm, x, before=True)
-        x, attn = self.customize_forward(x, encoder_padding_mask, incremental_state,
-                                         self_attn_mask, self_attn_padding_mask)
-        x = ckpt.checkpoint(lambda h: F.dropout(h, p=self.dropout, training=self.training), x)
-        x = residual + x
-        x = self.maybe_layer_norm(self.layer_norm, x, after=True)
-        return x, attn
+        return self.customize_forward(x, encoder_padding_mask, incremental_state,
+                                      self_attn_mask, self_attn_padding_mask)
 
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
         assert before ^ after
         if after ^ self.normalize_before:
-            return ckpt.checkpoint(layer_norm, x)
+            return layer_norm(x)
         else:
             return x
 
     def make_generation_fast_(self, need_attn=False, **kwargs):
         self.need_attn = need_attn
 
-    @register_to('postact', VALID_SUBLAYER)
-    def postact(self, args):
+    @register_to('ffn', VALID_SUBLAYER)
+    @register_to('ffn', VALID_FFN)
+    def ffn(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
+            residual = x
+            x = self.maybe_layer_norm(self.layer_norm, x, before=True)
+
             x = F.relu(self.fc1(x))
             x = F.dropout(x, p=self.relu_dropout, training=self.training)
             x = self.fc2(x)
+
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = residual + x
+            x = self.maybe_layer_norm(self.layer_norm, x, after=True)
+            return x, None
+
+        return forward
+
+    @register_to('postact', VALID_SUBLAYER)
+    @register_to('postact', VALID_FFN)
+    def postact(self, args):
+        self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
+        self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
+        self.inner_layer_norm = LayerNorm(args.decoder_ffn_embed_dim)
+
+        def forward(x, encoder_padding_mask, incremental_state,
+                    self_attn_mask, self_attn_padding_mask):
+            residual = x
+            x = self.fc1(x)
+            x = ckpt.checkpoint(self.inner_layer_norm, x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.relu_dropout, training=self.training)
+            x = F.relu(self.layer_norm(self.fc2(x)))
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = residual + x
             return x, None
 
         return forward
 
     @register_to('preact', VALID_SUBLAYER)
+    @register_to('preact', VALID_FFN)
     def preact(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
@@ -770,10 +798,13 @@ class ReformerDecoderSubLayer(nn.Module):
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
-            x = self.fc1(F.relu(x))
+            residual = x
+            x = self.fc1(F.relu(self.layer_norm(x)))
             x = F.dropout(x, p=self.relu_dropout, training=self.training)
             x = ckpt.checkpoint(self.inner_layer_norm, x)
             x = self.fc2(F.relu(x))
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = residual + x
             return x, None
 
         return forward
@@ -789,6 +820,8 @@ class ReformerDecoderSubLayer(nn.Module):
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
+            residual = x
+            x = self.maybe_layer_norm(self.layer_norm, x, before=True)
             x, attn = self.self_attn(
                 query=x,
                 key=x,
@@ -798,6 +831,9 @@ class ReformerDecoderSubLayer(nn.Module):
                 need_weights=(not self.training and self.need_attn),
                 attn_mask=self_attn_mask if self.decoder_attn else None,
             )
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = residual + x
+            x = self.maybe_layer_norm(self.layer_norm, x, after=True)
             return x, attn
 
         return forward
@@ -872,7 +908,7 @@ def base_architecture(args):
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
-    args.pre_activation = getattr(args, 'pre_activation', False)
+    args.ffn = getattr(args, 'ffn', 'ffn')
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
