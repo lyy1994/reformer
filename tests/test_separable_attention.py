@@ -49,11 +49,14 @@ class TestSeparableAttention(unittest.TestCase):
             0
         ).type_as(res2)
         res2 = res2.squeeze(2)
-        # in one step training (see all target positions)
-        res3, _ = attn(query[time:time + 1, :, batch:batch + 1, :].clone(),
-                       query[:, :, batch:batch + 1, :],
-                       query[:, :, batch:batch + 1, :],
-                       key_padding_mask=None, attn_mask=attn_mask[time:time + 1, :])
+        # in one step decoding (with cache)
+        incremental_state = {}
+        for i in range(time + 1):
+            res3, _ = attn(query[i:i + 1, :, batch:batch + 1, :],
+                           query[i:i + 1, :, batch:batch + 1, :],
+                           query[i:i + 1, :, batch:batch + 1, :],
+                           key_padding_mask=None, attn_mask=None,
+                           incremental_state=incremental_state)
         res3 = res3.masked_fill(
             key_padding_mask[batch:batch + 1, :].transpose(0, 1).unsqueeze(0).unsqueeze(-1),
             0
@@ -100,7 +103,7 @@ class TestSeparableAttention(unittest.TestCase):
                              msg=f"{i}th dim of result ({in_dim}) and q ({out_dim}) is not compatible")
         self.assertTrue(torch.all(torch.le(torch.abs(res3 - ans), 1e-4)),
                         msg=f"result and q are not equal in time={time}, batch={batch} when num_heads={head}")
-        print("| one step training passed")
+        print("| one step decoding (with cache) passed")
 
     def test_enc_self_attn(self):
         print(f"{self.test_enc_self_attn.__name__} is testing......")
