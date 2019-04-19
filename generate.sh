@@ -78,7 +78,7 @@ done
 ######## evaluation (no reset) ########
 # used for specific output file
 if [ ${is_eval} -eq 1 ]; then
-  output_file=${output_dir}/trans.${t}
+  output_file=${output_dir}/trans.${datatype}.${t}
 else
   output_file=
 fi
@@ -91,7 +91,7 @@ ref_file=${output_dir}/${datatype}*.${t}
 
 
 # save generate.sh
-cp `pwd`/generate.sh $output_dir
+cp `pwd`/${BASH_SOURCE[0]} $output_dir
 
 if [ -n "$ensemble" ]; then
   # start ensemble
