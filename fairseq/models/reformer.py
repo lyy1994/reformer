@@ -12,7 +12,6 @@ import functools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint as ckpt
 
 from fairseq import options
 from fairseq import utils
@@ -109,16 +108,14 @@ class ReformerModel(FairseqModel):
                             help='the method chosen to produce the 1D output')
         parser.add_argument('--flow', choices=VALID_FLOW.keys(),
                             help='the type of information flow for self-attention')
-        parser.add_argument('--summary-ffn', action='store_true',
-                            help='add a ffn to the end of a decoder layer (only for parallel flow)')
         parser.add_argument('--src-tgt-embed', action='store_true',
                             help='use source and target embeddings')
         parser.add_argument('--encoder-ffn', action='store_true',
                             help='apply ffn after encoder self-attention')
         parser.add_argument('--decoder-ffn', action='store_true',
                             help='apply ffn after decoder self-attention')
-        parser.add_argument('--ffn', choices=VALID_FFN.keys(),
-                            help='use which ffn implementation')
+        parser.add_argument('--light-ffn', action='store_true',
+                            help='mean pooling input before feeding into ffn')
 
     @classmethod
     def build_model(cls, args, task):
@@ -181,8 +178,6 @@ class ReformerModel(FairseqModel):
             # starting from N implies making extra N sublayers space in the first device (embeddings, softmax, encoder)
             sublayer_id = args.pseudo_sublayers
             sublayers_per_device = math.ceil((nsublayers + sublayer_id) / args.model_parallelism_world_size)
-            last_device = math.ceil((nsublayers + sublayer_id) / sublayers_per_device) - 1 \
-                if nsublayers >= args.model_parallelism_world_size else nsublayers - 1
             names, devices = ['module name'], ['device']
             for name, module in model.named_modules(prefix='reformer'):
                 # we only distribute sublayers to different GPU
@@ -198,11 +193,11 @@ class ReformerModel(FairseqModel):
                 # we push the dimension reduction to the last GPU (with potentially larger space)
                 # to avoid communication overhead (as well as the last layer norm)
                 if isinstance(module, ReformerOutputLayer):
-                    module.cuda(last_device)
+                    module.cuda(0)
                     names.append(name)
-                    devices.append(f'cuda:{last_device}')
+                    devices.append(f'cuda:{0}')
                 if '.decoder.layer_norm' in name:
-                    module.cuda(last_device)
+                    module.cuda(0)
             if args.debug:
                 name_width = max([len(e) for e in names])
                 device_width = max([len(e) for e in devices])
@@ -454,15 +449,15 @@ class ReformerDecoder(FairseqIncrementalDecoder):
             )
             inner_states.append(x)
 
+        # push the result to where softmax/embeddings hosted
+        x = x.to(self.embed_tokens.weight.device)
+
         # T x S x B x C -> T x B x C
         # TODO: output_layer after project_out_dim
         x = self.output_layer(x, encoder_out['encoder_padding_mask'] if encoder_out is not None else None)
 
         if self.normalize:
             x = self.layer_norm(x)
-
-        # push the result to where softmax/embeddings hosted
-        x = x.to(self.embed_tokens.weight.device)
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
@@ -532,26 +527,15 @@ class ReformerOutputLayer(nn.Module):
 
     def __init__(self, args):
         super().__init__()
-        self.normalize_before = args.decoder_normalize_before
-        self.layer_norm = LayerNorm(args.decoder_model_dim)
-        self.reducer = Reducer(args.decoder_output_layer, True, args)
+        self.reducer = Reducer(args.decoder_output_layer, args.decoder_normalize_before, args)
 
     def forward(self, x, encoder_padding_mask):
         # since reduction happens after layer_norm, additional layer_norm might be required after the
         # reduction, especially for those reduction variants that does not preserve output scale
         if encoder_padding_mask is not None:
             encoder_padding_mask = encoder_padding_mask.to(x.device)
-        x = self.maybe_layer_norm(self.layer_norm, x, before=True)
         x = self.reducer(x, encoder_padding_mask)
-        x = self.maybe_layer_norm(self.layer_norm, x, after=True)
         return x
-
-    def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
-        assert before ^ after
-        if after ^ self.normalize_before:
-            return layer_norm(x)
-        else:
-            return x
 
 
 VALID_FLOW = {}
@@ -587,14 +571,11 @@ class ReformerDecoderLayer(nn.Module):
         self.no_encoder_attn = no_encoder_attn
         self.flow = args.flow
         self.scaling = VALID_SCALING[args.scaling](2.)
-        self.ffn = args.ffn
         # sublayer declaration order must match their computation order, which
         # helps to avoid potential extra communication cost due to auto-register
         self.declare('decoder', args)
         if not self.no_encoder_attn:
             self.declare('encoder', args)
-        self.summary_ffn = ReformerDecoderSubLayer(args, self.ffn) \
-            if args.summary_ffn and self.flow == 'parallel' else None
 
     def declare(self, sublayer_type, args):
         assert sublayer_type in ['encoder', 'decoder']
@@ -604,7 +585,10 @@ class ReformerDecoderLayer(nn.Module):
         sublayers.append(ReformerDecoderSubLayer(args, 'attn2d', decoder_attn=decoder_attn))
         # add ffn layer
         if getattr(args, f'{sublayer_type}_ffn'):
-            sublayers.append(ReformerDecoderSubLayer(args, self.ffn, decoder_attn=decoder_attn))
+            if args.light_ffn and decoder_attn:
+                sublayers.append(ReformerDecoderSubLayer(args, 'ffn1d', decoder_attn=decoder_attn))
+            else:
+                sublayers.append(ReformerDecoderSubLayer(args, 'ffn2d', decoder_attn=decoder_attn))
         setattr(self, f'{sublayer_type}_sublayers', sublayers)
 
     def extra_repr(self):
@@ -623,8 +607,6 @@ class ReformerDecoderLayer(nn.Module):
         """
         x, attn = VALID_FLOW[self.flow](self, x, encoder_padding_mask, incremental_state,
                                         self_attn_mask, self_attn_padding_mask)
-        if self.summary_ffn is not None:
-            x, _ = self.summary_ffn(x, None, None)
         return x, attn
 
     @register_to('parallel', VALID_FLOW)
@@ -694,7 +676,6 @@ def fetch_input(forward_fn):
 
 
 VALID_SUBLAYER = {}
-VALID_FFN = {}
 
 
 class ReformerDecoderSubLayer(nn.Module):
@@ -746,9 +727,8 @@ class ReformerDecoderSubLayer(nn.Module):
     def make_generation_fast_(self, need_attn=False, **kwargs):
         self.need_attn = need_attn
 
-    @register_to('ffn', VALID_SUBLAYER)
-    @register_to('ffn', VALID_FFN)
-    def ffn(self, args):
+    @register_to('ffn2d', VALID_SUBLAYER)
+    def ffn2d(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
 
@@ -768,43 +748,34 @@ class ReformerDecoderSubLayer(nn.Module):
 
         return forward
 
-    @register_to('postact', VALID_SUBLAYER)
-    @register_to('postact', VALID_FFN)
-    def postact(self, args):
+    @register_to('ffn1d', VALID_SUBLAYER)
+    def ffn1d(self, args):
+        assert self.decoder_attn
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
-        self.inner_layer_norm = LayerNorm(args.decoder_ffn_embed_dim)
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
             residual = x
-            x = self.fc1(x)
-            x = ckpt.checkpoint(self.inner_layer_norm, x)
-            x = F.relu(x)
+            # TODO: multi-dimensional attention to reduce dimension
+            # mean pooling after normalization will shrink variance
+            # T x S x B x C
+            if encoder_padding_mask is not None:
+                x = x.masked_fill(
+                    encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
+                    0,
+                )
+            # T x B x C
+            x = x.sum(dim=1)
+            # TODO: add linear projection for mean pooling
+
+            x = self.maybe_layer_norm(self.layer_norm, x, before=True)
+            x = F.relu(self.fc1(x))
             x = F.dropout(x, p=self.relu_dropout, training=self.training)
-            x = F.relu(self.layer_norm(self.fc2(x)))
+            x = self.fc2(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-            x = residual + x
-            return x, None
-
-        return forward
-
-    @register_to('preact', VALID_SUBLAYER)
-    @register_to('preact', VALID_FFN)
-    def preact(self, args):
-        self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
-        self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
-        self.inner_layer_norm = LayerNorm(args.decoder_ffn_embed_dim)
-
-        def forward(x, encoder_padding_mask, incremental_state,
-                    self_attn_mask, self_attn_padding_mask):
-            residual = x
-            x = self.fc1(F.relu(self.layer_norm(x)))
-            x = F.dropout(x, p=self.relu_dropout, training=self.training)
-            x = ckpt.checkpoint(self.inner_layer_norm, x)
-            x = self.fc2(F.relu(x))
-            x = F.dropout(x, p=self.dropout, training=self.training)
-            x = residual + x
+            x = residual + x.unsqueeze(1)
+            x = self.maybe_layer_norm(self.layer_norm, x, after=True)
             return x, None
 
         return forward
@@ -897,7 +868,6 @@ def base_architecture(args):
     args.decoder_input_layer = getattr(args, 'decoder_input_layer', 'add')
     args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'max')
     args.flow = getattr(args, 'flow', 'sequential')
-    args.summary_ffn = getattr(args, 'summary_ffn', False)
 
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
     args.decoder_model_dim = getattr(args, 'decoder_model_dim',
@@ -908,7 +878,7 @@ def base_architecture(args):
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
     args.encoder_ffn = getattr(args, 'encoder_ffn', False)
     args.decoder_ffn = getattr(args, 'decoder_ffn', False)
-    args.ffn = getattr(args, 'ffn', 'ffn')
+    args.light_ffn = getattr(args, 'light_ffn', False)
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
