@@ -28,11 +28,11 @@ other_options="--quiet --remove-bpe --model-parallelism-world-size $worker_gpus"
 
 ######## models (default) ########
 # must exist
-tag=reformer_e256_l6_avg_attn_normb_encffn_dropout02_attndrop01_ffn2048_share_opt_decay
+tag=iwslt_deep_reformer_e256_l7_add_attn_mean_normb_chain2_dropout03
 # used for specific model file
 model_file=checkpoint_best.pt
 # used for specific model directory
-output_dir=../checkpoints/${tag}
+output_dir=../checkpoints/torch-1.0.1/${tag}
 # used to specify log name
 log_file=$datatype.log
 

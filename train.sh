@@ -17,13 +17,13 @@ dataset=iwslt14.tokenized.de-en
 # which hparams 
 param=reformer_iwslt_de_en
 # defualt is 103k. About 10 epochs for 700w CWMT
-max_update=40000
+max_update=50000
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
 other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=reformer_e256_l6_avg_attn_normb_encffn_dropout02_attndrop01_ffn2048_share_opt_decay
+tag=iwslt_deep_reformer_e256_l7_add_attn_mean_normb_chain2_dropout03
 # whether to continue training if experiment is already existed
 is_continue=1
 
@@ -31,7 +31,7 @@ is_continue=1
 # dir of training data
 data_dir=../data/data-bin
 # dir of models
-output_dir=../checkpoints/${tag}
+output_dir=../checkpoints/torch-1.0.1/${tag}
 
 if [ ! -d "$output_dir" ]; then
   mkdir -p ${output_dir}
@@ -40,7 +40,7 @@ elif [ ${is_continue} -eq 0 ]; then
   exit -1
 fi
 # save train.sh
-cp `pwd`/train.sh $output_dir
+cp `pwd`/${BASH_SOURCE[0]} $output_dir
 
 if [ ! -d "$data_dir/$dataset" ]; then
   # start preprocessing
@@ -64,19 +64,17 @@ $data_dir/$dataset
 
 --encoder-embed-dim 256
 --decoder-embed-dim 256
---decoder-ffn-embed-dim 2048
+--decoder-ffn-embed-dim 1024
 --decoder-attention-heads 4
 --decoder-input-layer add
 --decoder-output-layer attn
---flow sequential
 --scaling mean
 --decoder-normalize-before
---decoder-layers 6
---encoder-ffn
---attention-dropout 0.1
+--decoder-layers 7
+--attention-dropout 0
 --relu-dropout 0
---dropout 0.2
---share-decoder-input-output-embed
+--dropout 0.3
+--layer-chain attn2d:dec+ffn2d+attn2d:enc+ffn2d
 
 --distributed-world-size 1
 --model-parallelism-world-size $worker_gpus
