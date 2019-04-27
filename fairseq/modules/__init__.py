@@ -18,7 +18,7 @@ from .multihead_attention import MultiheadAttention
 from .scalar_bias import ScalarBias
 from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
 from .separable_attention import SeparableAttention
-from .reducer import Reducer
+from .reduction import Reduction
 
 __all__ = [
     'AdaptiveSoftmax',
@@ -34,5 +34,5 @@ __all__ = [
     'ScalarBias',
     'SinusoidalPositionalEmbedding',
     'SeparableAttention',
-    'Reducer',
+    'Reduction',
 ]

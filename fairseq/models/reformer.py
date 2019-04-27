@@ -18,7 +18,7 @@ from fairseq import utils
 
 from fairseq.modules import (
     AdaptiveSoftmax, LearnedPositionalEmbedding, SeparableAttention,
-    SinusoidalPositionalEmbedding, Reducer
+    SinusoidalPositionalEmbedding, Reduction
 )
 
 from . import (
@@ -104,7 +104,7 @@ class ReformerModel(FairseqModel):
                             help='the method chosen to scale the adding output')
         parser.add_argument('--decoder-input-layer', choices=VALID_INPUT_LAYER.keys(),
                             help='the method chosen to produce the 2D input')
-        parser.add_argument('--decoder-output-layer', choices=Reducer.VALID_REDUCER.keys(),
+        parser.add_argument('--decoder-output-layer', choices=Reduction.VALID_REDUCTION.keys(),
                             help='the method chosen to produce the 1D output')
         parser.add_argument('--src-tgt-embed', action='store_true',
                             help='use source and target embeddings')
@@ -519,14 +519,14 @@ class ReformerOutputLayer(nn.Module):
 
     def __init__(self, args):
         super().__init__()
-        self.reducer = Reducer(args.decoder_output_layer, args.decoder_normalize_before, args)
+        self.reduction = Reduction(args.decoder_output_layer, args.decoder_normalize_before, args)
 
     def forward(self, x, encoder_padding_mask):
         # since reduction happens after layer_norm, additional layer_norm might be required after the
         # reduction, especially for those reduction variants that does not preserve output scale
         if encoder_padding_mask is not None:
             encoder_padding_mask = encoder_padding_mask.to(x.device)
-        x = self.reducer(x, encoder_padding_mask)
+        x = self.reduction(x, encoder_padding_mask)
         return x
 
 

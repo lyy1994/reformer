@@ -14,22 +14,22 @@ from fairseq.modules import (
     SeparableAttention,
 )
 
-_VALID_REDUCER = {}
+_VALID_REDUCTION = {}
 
 
-def register_reducer(name):
-    def register_reducer_fn(fn):
-        _VALID_REDUCER[name] = fn
+def register_to(name: str, mapping: dict):
+    def wrapper(fn):
+        mapping[name] = fn
         return fn
 
-    return register_reducer_fn
+    return wrapper
 
 
-class Reducer(nn.Module):
+class Reduction(nn.Module):
     """
-    Dimension reducer that reduces source/target dimension of the input representation.
+    Dimension reduction that reduces source/target dimension of the input representation.
     """
-    VALID_REDUCER = {}
+    VALID_REDUCTION = {}
 
     def __init__(self, method: str, normalize_before: bool, args) -> None:
         super().__init__()
@@ -37,7 +37,7 @@ class Reducer(nn.Module):
         self.normalize_before = normalize_before
         self.specific_repr = None
         self.layer_norm = nn.LayerNorm(args.decoder_model_dim)
-        self.customize_forward = self.VALID_REDUCER[self.method](self, args)
+        self.customize_forward = self.VALID_REDUCTION[self.method](self, args)
 
     def extra_repr(self):
         general_repr = 'method={}, normalize_before={},'.format(self.method, self.normalize_before)
@@ -54,7 +54,7 @@ class Reducer(nn.Module):
         else:
             return x
 
-    @register_reducer('attn')
+    @register_to('attn', _VALID_REDUCTION)
     def attn(self, args):
         """
         Reduce the given dimension based on the distribution computed by an affine transformation
@@ -91,7 +91,7 @@ class Reducer(nn.Module):
 
         return _forward
 
-    @register_reducer('multihead')
+    @register_to('multihead', _VALID_REDUCTION)
     def multihead(self, args):
         """
         Reduce the given dimension based on the distribution computed by a
@@ -152,4 +152,4 @@ class Reducer(nn.Module):
         return _forward
 
 
-Reducer.VALID_REDUCER = _VALID_REDUCER
+Reduction.VALID_REDUCTION = _VALID_REDUCTION
