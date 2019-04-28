@@ -110,6 +110,9 @@ class ReformerModel(FairseqModel):
                             help='use source and target embeddings')
         parser.add_argument('--layer-chain', type=str, metavar='STR',
                             help='specify the instruction of layers')
+        parser.add_argument('--init-rescale', action='store_true',
+                            help='rescale the last weight matrix of each residual branch during'
+                                 'initialization, since Reformer is ~2x deeper than Transformer')
 
     @classmethod
     def build_model(cls, args, task):
@@ -684,6 +687,8 @@ class ReformerDecoderSubLayer(nn.Module):
     def ffn2d(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
+        if args.init_rescale:
+            self.fc2.weight.data *= 1. / math.sqrt(2.)
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
@@ -706,11 +711,12 @@ class ReformerDecoderSubLayer(nn.Module):
         assert self.decoder_attn
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
+        if args.init_rescale:
+            self.fc2.weight.data *= 1. / math.sqrt(2.)
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
             residual = x
-            # TODO: multi-dimensional attention to reduce dimension
             # mean pooling after normalization will shrink variance
             # T x S x B x C
             if encoder_padding_mask is not None:
@@ -741,6 +747,8 @@ class ReformerDecoderSubLayer(nn.Module):
             tgt_attn=self.decoder_attn,
         )
         self.need_attn = False
+        if args.init_rescale:
+            self.self_attn.out_proj.weight.data *= 1. / math.sqrt(2.)
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
@@ -829,6 +837,7 @@ def base_architecture(args):
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
     args.layer_chain = getattr(args, 'layer_chain', 'attn2d:dec+ffn2d+attn2d:enc+ffn2d')
+    args.init_rescale = getattr(args, 'init_rescale', False)
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
