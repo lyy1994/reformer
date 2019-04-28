@@ -19,6 +19,7 @@ from .scalar_bias import ScalarBias
 from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
 from .separable_attention import SeparableAttention
 from .reduction import Reduction
+from .dropout1d import Dropout1d
 
 __all__ = [
     'AdaptiveSoftmax',
@@ -35,4 +36,5 @@ __all__ = [
     'SinusoidalPositionalEmbedding',
     'SeparableAttention',
     'Reduction',
+    'Dropout1d',
 ]
