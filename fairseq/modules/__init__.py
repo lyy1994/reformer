@@ -17,9 +17,10 @@ from .linearized_convolution import LinearizedConvolution
 from .multihead_attention import MultiheadAttention
 from .scalar_bias import ScalarBias
 from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
+from .dropout1d import Dropout1d
+from .dropout2d_tsbc import Dropout2d
 from .separable_attention import SeparableAttention
 from .reduction import Reduction
-from .dropout1d import Dropout1d
 
 __all__ = [
     'AdaptiveSoftmax',
@@ -34,7 +35,8 @@ __all__ = [
     'MultiheadAttention',
     'ScalarBias',
     'SinusoidalPositionalEmbedding',
+    'Dropout1d',
+    'Dropout2d',
     'SeparableAttention',
     'Reduction',
-    'Dropout1d',
 ]
