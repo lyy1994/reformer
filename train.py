@@ -61,9 +61,9 @@ def main(args):
     # Build model and criterion
     model = task.build_model(args)
     criterion = task.build_criterion(args)
+    print(model)
     print('| model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
     print('| num. model params: {:,}'.format(sum(p.numel() for p in model.parameters())))
-    print(model)
 
     # Make a dummy batch to (i) warm the caching allocator and (ii) as a
     # placeholder DistributedDataParallel when there's an uneven number of

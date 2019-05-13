@@ -18,7 +18,7 @@ from fairseq import utils
 
 from fairseq.modules import (
     AdaptiveSoftmax, LearnedPositionalEmbedding, SeparableAttention,
-    SinusoidalPositionalEmbedding, Reduction
+    SinusoidalPositionalEmbedding, Reduction, Dropout1d, Dropout2d,
 )
 
 from . import (
@@ -110,9 +110,6 @@ class ReformerModel(FairseqModel):
                             help='use source and target embeddings')
         parser.add_argument('--layer-chain', type=str, metavar='STR',
                             help='specify the instruction of layers')
-        parser.add_argument('--init-rescale', action='store_true',
-                            help='rescale the last weight matrix of each residual branch during'
-                                 'initialization, since Reformer is ~2x deeper than Transformer')
 
     @classmethod
     def build_model(cls, args, task):
@@ -654,6 +651,7 @@ class ReformerDecoderSubLayer(nn.Module):
         self.customize_forward = VALID_SUBLAYER[self.layer_type](self, args)
 
         self.layer_norm = LayerNorm(self.embed_dim)
+        self.need_attn = True
 
     def extra_repr(self):
         return 'layer_type={}, normalize_before={},'.format(self.layer_type, self.normalize_before)
@@ -687,8 +685,8 @@ class ReformerDecoderSubLayer(nn.Module):
     def ffn2d(self, args):
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
-        if args.init_rescale:
-            self.fc2.weight.data *= 1. / math.sqrt(2.)
+        self.relu_dropout2d = Dropout2d(p=self.relu_dropout)
+        self.dropout2d = Dropout2d(p=self.dropout)
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
@@ -696,10 +694,10 @@ class ReformerDecoderSubLayer(nn.Module):
             x = self.maybe_layer_norm(self.layer_norm, x, before=True)
 
             x = F.relu(self.fc1(x))
-            x = F.dropout(x, p=self.relu_dropout, training=self.training)
+            x = self.relu_dropout2d(x)
             x = self.fc2(x)
 
-            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = self.dropout2d(x)
             x = residual + x
             x = self.maybe_layer_norm(self.layer_norm, x, after=True)
             return x, None
@@ -711,8 +709,8 @@ class ReformerDecoderSubLayer(nn.Module):
         assert self.decoder_attn
         self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
         self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
-        if args.init_rescale:
-            self.fc2.weight.data *= 1. / math.sqrt(2.)
+        self.relu_dropout1d = Dropout1d(p=self.relu_dropout, dim=0)
+        self.dropout1d = Dropout1d(p=self.dropout, dim=0)
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
@@ -726,13 +724,12 @@ class ReformerDecoderSubLayer(nn.Module):
                 )
             # T x B x C
             x = x.sum(dim=1)
-            # TODO: add linear projection for mean pooling
 
             x = self.maybe_layer_norm(self.layer_norm, x, before=True)
             x = F.relu(self.fc1(x))
-            x = F.dropout(x, p=self.relu_dropout, training=self.training)
+            x = self.relu_dropout1d(x)
             x = self.fc2(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = self.dropout1d(x)
             x = residual + x.unsqueeze(1)
             x = self.maybe_layer_norm(self.layer_norm, x, after=True)
             return x, None
@@ -746,9 +743,7 @@ class ReformerDecoderSubLayer(nn.Module):
             dropout=args.attention_dropout,
             tgt_attn=self.decoder_attn,
         )
-        self.need_attn = False
-        if args.init_rescale:
-            self.self_attn.out_proj.weight.data *= 1. / math.sqrt(2.)
+        self.dropout1d = Dropout1d(p=self.dropout, dim=1 if self.decoder_attn else 0)
 
         def forward(x, encoder_padding_mask, incremental_state,
                     self_attn_mask, self_attn_padding_mask):
@@ -763,7 +758,7 @@ class ReformerDecoderSubLayer(nn.Module):
                 need_weights=(not self.training and self.need_attn),
                 attn_mask=self_attn_mask if self.decoder_attn else None,
             )
-            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = self.dropout1d(x)
             x = residual + x
             x = self.maybe_layer_norm(self.layer_norm, x, after=True)
             return x, attn
@@ -836,8 +831,7 @@ def base_architecture(args):
     args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_model_dim)
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
-    args.layer_chain = getattr(args, 'layer_chain', 'attn2d:dec+ffn2d+attn2d:enc+ffn2d')
-    args.init_rescale = getattr(args, 'init_rescale', False)
+    args.layer_chain = getattr(args, 'layer_chain', 'attn2d:dec+ffn2d:dec+attn2d:enc+ffn2d:enc')
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
