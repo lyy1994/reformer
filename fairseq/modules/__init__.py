@@ -18,7 +18,7 @@ from .multihead_attention import MultiheadAttention
 from .scalar_bias import ScalarBias
 from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
 from .dropout1d import Dropout1d
-from .dropout2d_tsbc import Dropout2d
+from .dropout2d import Dropout2d
 from .separable_attention import SeparableAttention
 from .reduction import Reduction
 
