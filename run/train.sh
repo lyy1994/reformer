@@ -17,64 +17,38 @@ dataset=iwslt14.tokenized.de-en
 # which hparams 
 param=reformer_iwslt_de_en
 # defualt is 103k. About 10 epochs for 700w CWMT
-max_update=50000
+max_epoch=45
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
 other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=iwslt_deep_reformer_e256_l7_add_attn_mean_normb_chain2_dropout03
+tag=iwslt_reformer
 # whether to continue training if experiment is already existed
 is_continue=1
 
 
 # dir of training data
-data_dir=../data/data-bin
+data_dir=../../data/data-bin
 # dir of models
-output_dir=../checkpoints/torch-1.0.1/${tag}
+output_dir=../../checkpoints/torch-1.1.0/${tag}
 
-if [ ! -d "$output_dir" ]; then
+if [[ ! -d "$output_dir" ]]; then
   mkdir -p ${output_dir}
-elif [ ${is_continue} -eq 0 ]; then
+elif [[ ${is_continue} -eq 0 ]]; then
   echo -e "\033[31m$output_dir exists!\033[0m"
   exit -1
 fi
 # save train.sh
-cp `pwd`/${BASH_SOURCE[0]} $output_dir
-
-if [ ! -d "$data_dir/$dataset" ]; then
-  # start preprocessing
-  echo -e "\033[34mpreprocess from ${data_dir%%/data-bin*}/$dataset to $data_dir/$dataset\033[0m"
-  python3 -u preprocess.py \
-  --source-lang ${s} \
-  --target-lang ${t} \
-  --trainpref ${data_dir%%/data-bin*}/${dataset}/train \
-  --validpref ${data_dir%%/data-bin*}/${dataset}/valid \
-  --testpref ${data_dir%%/data-bin*}/${dataset}/test \
-  --destdir ${data_dir}/${dataset}
-fi
+cp `pwd`/${BASH_SOURCE[0]} ${output_dir}
 
 adam_betas="'(0.9, 0.997)'"
 
-cmd="python3 -u train.py
+cmd="python3 -u ../train.py
 $data_dir/$dataset
 -a $param
 -s $s
 -t $t
-
---encoder-embed-dim 256
---decoder-embed-dim 256
---decoder-ffn-embed-dim 1024
---decoder-attention-heads 4
---decoder-input-layer add
---decoder-output-layer attn
---scaling mean
---decoder-normalize-before
---decoder-layers 7
---attention-dropout 0
---relu-dropout 0
---dropout 0.3
---layer-chain attn2d:dec+ffn2d+attn2d:enc+ffn2d
 
 --distributed-world-size 1
 --model-parallelism-world-size $worker_gpus
@@ -83,8 +57,8 @@ $data_dir/$dataset
 --no-progress-bar
 --log-interval 100
 
---max-update $max_update
---max-tokens 250
+--max-epoch $max_epoch
+--max-tokens 256
 --update-freq 16
 
 --criterion label_smoothed_cross_entropy
@@ -101,14 +75,14 @@ $data_dir/$dataset
 
 --optimizer adam"
 cmd=${cmd}" --adam-betas "${adam_betas}
-if [ -n "$other_hparams" ]; then
+if p[ -n "$other_hparams" ]]; then
   cmd=${cmd}" "${other_hparams}
 fi
 
-echo -e "\033[34mrun command: "${cmd}"\033[0m"
+echo -e "\033[34m"${cmd}"\033[0m"
 # start training, >> for preserve content that already existed (continue training)
 cmd="CUDA_VISIBLE_DEVICES=$devices nohup "${cmd}" >> $output_dir/train.log 2>&1 &"
-eval $cmd
+eval ${cmd}
 
 # to avoid the latency of write file
 sleep 5s
