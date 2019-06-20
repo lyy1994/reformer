@@ -12,6 +12,7 @@ import functools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as ckpt
 
 from fairseq import options
 from fairseq import utils
@@ -110,6 +111,8 @@ class ReformerModel(FairseqModel):
                             help='use source and target embeddings')
         parser.add_argument('--layer-chain', type=str, metavar='STR',
                             help='specify the instruction of layers')
+        parser.add_argument('--memory-efficient', default=False, action='store_true',
+                            help='checkpoint all attentions, 30% slower')
 
     @classmethod
     def build_model(cls, args, task):
@@ -704,40 +707,8 @@ class ReformerDecoderSubLayer(nn.Module):
 
         return forward
 
-    @register_to('ffn1d', VALID_SUBLAYER)
-    def ffn1d(self, args):
-        assert self.decoder_attn
-        self.fc1 = Linear(self.embed_dim, args.decoder_ffn_embed_dim)
-        self.fc2 = Linear(args.decoder_ffn_embed_dim, self.embed_dim)
-        self.relu_dropout1d = Dropout1d(p=self.relu_dropout, dim=0)
-        self.dropout1d = Dropout1d(p=self.dropout, dim=0)
-
-        def forward(x, encoder_padding_mask, incremental_state,
-                    self_attn_mask, self_attn_padding_mask):
-            residual = x
-            # mean pooling after normalization will shrink variance
-            # T x S x B x C
-            if encoder_padding_mask is not None:
-                x = x.masked_fill(
-                    encoder_padding_mask.transpose(0, 1).unsqueeze(0).unsqueeze(-1),
-                    0,
-                )
-            # T x B x C
-            x = x.sum(dim=1)
-
-            x = self.maybe_layer_norm(self.layer_norm, x, before=True)
-            x = F.relu(self.fc1(x))
-            x = self.relu_dropout1d(x)
-            x = self.fc2(x)
-            x = self.dropout1d(x)
-            x = residual + x.unsqueeze(1)
-            x = self.maybe_layer_norm(self.layer_norm, x, after=True)
-            return x, None
-
-        return forward
-
-    @register_to('attn2d', VALID_SUBLAYER)
-    def attn2d(self, args):
+    @register_to('attn1d', VALID_SUBLAYER)
+    def attn1d(self, args):
         self.self_attn = SeparableAttention(
             self.embed_dim, args.decoder_attention_heads,
             dropout=args.attention_dropout,
@@ -749,15 +720,29 @@ class ReformerDecoderSubLayer(nn.Module):
                     self_attn_mask, self_attn_padding_mask):
             residual = x
             x = self.maybe_layer_norm(self.layer_norm, x, before=True)
-            x, attn = self.self_attn(
-                query=x,
-                key=x,
-                value=x,
-                key_padding_mask=self_attn_padding_mask if self.decoder_attn else encoder_padding_mask,
-                incremental_state=incremental_state,
-                need_weights=(not self.training and self.need_attn),
-                attn_mask=self_attn_mask if self.decoder_attn else None,
-            )
+            if not args.memory_efficient:
+                x, attn = self.self_attn(
+                    query=x,
+                    key=x,
+                    value=x,
+                    key_padding_mask=self_attn_padding_mask if self.decoder_attn else encoder_padding_mask,
+                    incremental_state=incremental_state,
+                    need_weights=(not self.training and self.need_attn),
+                    attn_mask=self_attn_mask if self.decoder_attn else None,
+                )
+            else:
+                x, attn = ckpt.checkpoint(
+                    lambda h: self.self_attn(
+                        query=h,
+                        key=h,
+                        value=h,
+                        key_padding_mask=self_attn_padding_mask if self.decoder_attn else encoder_padding_mask,
+                        incremental_state=incremental_state,
+                        need_weights=True,
+                        attn_mask=self_attn_mask if self.decoder_attn else None,
+                    ),
+                    x,
+                )
             x = self.dropout1d(x)
             x = residual + x
             x = self.maybe_layer_norm(self.layer_norm, x, after=True)
@@ -807,7 +792,7 @@ def base_architecture(args):
     args.decoder_embed_path = getattr(args, 'decoder_embed_path', None)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', args.encoder_embed_dim)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 2048)
-    args.decoder_layers = getattr(args, 'decoder_layers', 6)
+    args.decoder_layers = getattr(args, 'decoder_layers', 7)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 8)
     args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', False)
     args.decoder_learned_pos = getattr(args, 'decoder_learned_pos', False)
@@ -820,9 +805,9 @@ def base_architecture(args):
     args.share_all_embeddings = getattr(args, 'share_all_embeddings', False)
     args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
 
-    args.scaling = getattr(args, 'scaling', 'null')
+    args.scaling = getattr(args, 'scaling', 'mean')
     args.decoder_input_layer = getattr(args, 'decoder_input_layer', 'add')
-    args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'max')
+    args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'attn')
 
     args.decoder_input_dim = getattr(args, 'decoder_input_dim', args.decoder_embed_dim)
     args.decoder_model_dim = getattr(args, 'decoder_model_dim',
@@ -831,58 +816,32 @@ def base_architecture(args):
     args.decoder_output_dim = getattr(args, 'decoder_output_dim', args.decoder_model_dim)
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
-    args.layer_chain = getattr(args, 'layer_chain', 'attn2d:dec+ffn2d:dec+attn2d:enc+ffn2d:enc')
+    args.layer_chain = getattr(args, 'layer_chain', 'attn1d:dec+ffn2d:dec+attn1d:enc+ffn2d:enc')
+    args.memory_efficient = getattr(args, 'memory_efficient', False)
 
 
 @register_model_architecture('reformer', 'reformer_iwslt_de_en')
 def reformer_iwslt_de_en(args):
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 256)
-    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1024)
-    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 4)
-    args.encoder_layers = getattr(args, 'encoder_layers', 6)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 256)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 1024)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 4)
-    args.decoder_layers = getattr(args, 'decoder_layers', 6)
+    args.dropout = getattr(args, 'dropout', 0.3)
+    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
+    base_architecture(args)
+
+
+@register_model_architecture('reformer', 'reformer_nist_zh_en')
+def reformer_nist_zh_en(args):
+    args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
+    args.relu_dropout = getattr(args, 'relu_dropout', 0.1)
+    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
     base_architecture(args)
 
 
 @register_model_architecture('reformer', 'reformer_wmt_en_de')
 def reformer_wmt_en_de(args):
-    base_architecture(args)
-
-
-# parameters used in the "Attention Is All You Need" paper (Vaswani, et al, 2017)
-@register_model_architecture('reformer', 'reformer_vaswani_wmt_en_de_big')
-def reformer_vaswani_wmt_en_de_big(args):
-    args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 1024)
-    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 4096)
-    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 16)
-    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', False)
-    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 1024)
-    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 4096)
-    args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 16)
-    args.dropout = getattr(args, 'dropout', 0.3)
-    base_architecture(args)
-
-
-@register_model_architecture('reformer', 'reformer_vaswani_wmt_en_fr_big')
-def reformer_vaswani_wmt_en_fr_big(args):
-    args.dropout = getattr(args, 'dropout', 0.1)
-    reformer_vaswani_wmt_en_de_big(args)
-
-
-@register_model_architecture('reformer', 'reformer_wmt_en_de_big')
-def reformer_wmt_en_de_big(args):
-    args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
-    reformer_vaswani_wmt_en_de_big(args)
-
-
-# default parameters used in tensor2tensor implementation
-@register_model_architecture('reformer', 'reformer_wmt_en_de_big_t2t')
-def reformer_wmt_en_de_big_t2t(args):
-    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', True)
-    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
     args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
     args.relu_dropout = getattr(args, 'relu_dropout', 0.1)
-    reformer_vaswani_wmt_en_de_big(args)
+    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
+    base_architecture(args)
