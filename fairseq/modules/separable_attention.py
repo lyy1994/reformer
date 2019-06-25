@@ -63,7 +63,7 @@ class SeparableAttention(nn.Module):
             nn.init.xavier_normal_(self.bias_v)
 
     def extra_repr(self):
-        return 'tgt_attn={},'.format(self.tgt_attn)
+        return 'tgt_attn={}, num_heads={},'.format(self.tgt_attn, self.num_heads)
 
     def forward(self, query, key, value, key_padding_mask=None, incremental_state=None, need_weights=True,
                 attn_mask=None):
