@@ -22,11 +22,15 @@ log_file=${model_dir}/${ckpt%%.pt}/log_${s}_${t}_${subset}_beam${beam_size}_lenp
 output_file=${model_dir}/${ckpt%%.pt}/hypo_${s}_${t}_${subset}_beam${beam_size}_lenpen${lenpen}
 
 # for multiple references evaluation
-ref_file_bpe=`find ${data_root_dir%%/data-bin*}/${dataset} -name ${subset}[0-9]*.${t}`
+ref_file_bpe=`find ${data_root_dir%%/data-bin*}/${dataset}/${subset} -name *[0-9]*.${t}`
 if [[ -z "$ref_file_bpe" ]]; then
-  ref_file_bpe=${data_root_dir%%/data-bin*}/${dataset}/${subset}.${t}
+  # single reference
+  ref_file_bpe=${data_root_dir%%/data-bin*}/${dataset}/${subset}/*.${t}
+  ref_file=`ls ${ref_file_bpe}`
+  ref_file=${model_dir}/${ckpt%%.pt}/${ref_file##*/}
+else
+  ref_file=${model_dir}/${ckpt%%.pt}/*[0-9]*.${t}
 fi
-ref_file=${model_dir}/${ckpt%%.pt}/${subset}*.${t}
 
 echo -e "| Detected References:\n$ref_file_bpe" | tee -a -i ${log_file}
 
