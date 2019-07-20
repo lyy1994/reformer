@@ -27,11 +27,6 @@ from . import (
     register_model_architecture,
 )
 
-VALID_SCALING = {
-    'null': lambda dim: torch.tensor(1.),
-    'mean': lambda dim: torch.tensor(1. / dim),
-    'sqrt': lambda dim: torch.sqrt(1. / torch.tensor(dim)),
-}
 VALID_INPUT_LAYER = {
     'cat': lambda encoder_embed_dim, decoder_embed_dim: encoder_embed_dim + decoder_embed_dim,
     'add': lambda encoder_embed_dim, decoder_embed_dim: decoder_embed_dim,
@@ -101,8 +96,6 @@ class ReformerModel(FairseqModel):
         parser.add_argument('--adaptive-softmax-dropout', type=float, metavar='D',
                             help='sets adaptive softmax dropout for the tail projections')
 
-        parser.add_argument('--scaling', choices=VALID_SCALING.keys(),
-                            help='the method chosen to scale the adding output')
         parser.add_argument('--decoder-input-layer', choices=VALID_INPUT_LAYER.keys(),
                             help='the method chosen to produce the 2D input')
         parser.add_argument('--decoder-output-layer', choices=Reduction.VALID_REDUCTION.keys(),
@@ -493,10 +486,9 @@ class ReformerInputLayer(nn.Module):
         super().__init__()
         # TODO: more ways to form 2D representation
         self.input_layer = args.decoder_input_layer
-        self.scaling = VALID_SCALING[args.scaling](2.)
 
     def extra_repr(self):
-        return 'input_layer={}, scaling={}'.format(self.input_layer, self.scaling)
+        return 'input_layer={}'.format(self.input_layer)
 
     def forward(self, src_embed, tgt_embed):
         x = None
@@ -510,8 +502,7 @@ class ReformerInputLayer(nn.Module):
             assert src_embed.size(-1) == tgt_embed.size(-1), \
                 f'source embedding dim ({src_embed.size(-1)}) must match target embedding dim({tgt_embed.size(-1)}) ' \
                 f'when using input layer {self.input_layer}'
-            x = src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1) \
-                + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1) * self.scaling.to(src_embed.device)
+            x = src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1) + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)
         return x
 
 
@@ -805,7 +796,6 @@ def base_architecture(args):
     args.share_all_embeddings = getattr(args, 'share_all_embeddings', False)
     args.no_token_positional_embeddings = getattr(args, 'no_token_positional_embeddings', False)
 
-    args.scaling = getattr(args, 'scaling', 'mean')
     args.decoder_input_layer = getattr(args, 'decoder_input_layer', 'add')
     args.decoder_output_layer = getattr(args, 'decoder_output_layer', 'attn')
 
