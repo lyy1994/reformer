@@ -75,7 +75,7 @@ $data_dir/$dataset
 
 --optimizer adam"
 cmd=${cmd}" --adam-betas "${adam_betas}
-if p[ -n "$other_hparams" ]]; then
+if [[ -n "$other_hparams" ]]; then
   cmd=${cmd}" "${other_hparams}
 fi
 
