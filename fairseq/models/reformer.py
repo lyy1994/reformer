@@ -22,6 +22,10 @@ from fairseq.modules import (
     SinusoidalPositionalEmbedding, Reduction, Dropout1d, Dropout2d,
 )
 
+from fairseq.models.transformer import (
+    TransformerEncoderLayer,
+)
+
 from . import (
     FairseqIncrementalDecoder, FairseqEncoder, FairseqModel, register_model,
     register_model_architecture,
@@ -69,6 +73,14 @@ class ReformerModel(FairseqModel):
                             help='path to pre-trained encoder embedding')
         parser.add_argument('--encoder-embed-dim', type=int, metavar='N',
                             help='encoder embedding dimension')
+        parser.add_argument('--encoder-ffn-embed-dim', type=int, metavar='N',
+                            help='encoder embedding dimension for FFN')
+        parser.add_argument('--encoder-layers', type=int, metavar='N',
+                            help='num encoder layers')
+        parser.add_argument('--encoder-attention-heads', type=int, metavar='N',
+                            help='num encoder attention heads')
+        parser.add_argument('--encoder-normalize-before', action='store_true',
+                            help='apply layernorm before each encoder block')
         parser.add_argument('--encoder-learned-pos', action='store_true',
                             help='use learned positional embeddings in the encoder')
         parser.add_argument('--decoder-embed-path', type=str, metavar='STR',
@@ -240,7 +252,15 @@ class ReformerEncoder(FairseqEncoder):
             mean=0, std=embed_dim ** -0.5
         )) if args.src_tgt_embed else None
 
+        self.layers = nn.ModuleList([])
+        self.layers.extend([
+            TransformerEncoderLayer(args)
+            for _ in range(args.encoder_layers)
+        ])
         self.register_buffer('version', torch.Tensor([2]))
+        self.normalize = args.encoder_normalize_before
+        if self.normalize:
+            self.layer_norm = LayerNorm(embed_dim)
 
     def forward(self, src_tokens, src_lengths):
         """
@@ -272,6 +292,15 @@ class ReformerEncoder(FairseqEncoder):
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
         if not encoder_padding_mask.any():
             encoder_padding_mask = None
+
+        # encoder layers
+        for layer in self.layers:
+            if self.layer_pos_embed:
+                x += self.embed_positions(src_tokens).transpose(0, 1)
+            x = layer(x, encoder_padding_mask)
+
+        if self.normalize:
+            x = self.layer_norm(x)
 
         return {
             'encoder_out': x,  # T x B x C
