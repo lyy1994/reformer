@@ -116,8 +116,6 @@ class ReformerModel(FairseqModel):
                             help='use source and target embeddings')
         parser.add_argument('--layer-chain', type=str, metavar='STR',
                             help='specify the instruction of layers')
-        parser.add_argument('--layer-pos-embed', default=False, action='store_true',
-                            help='add joint position embeddings into each layer input')
         parser.add_argument('--memory-efficient', default=False, action='store_true',
                             help='checkpoint all attentions, 30% slower')
 
@@ -233,7 +231,6 @@ class ReformerEncoder(FairseqEncoder):
     def __init__(self, args, dictionary, embed_tokens, left_pad=True):
         super().__init__(dictionary)
         self.dropout = args.dropout
-        self.layer_pos_embed = args.layer_pos_embed
 
         embed_dim = embed_tokens.embedding_dim
         self.padding_idx = embed_tokens.padding_idx
@@ -279,7 +276,7 @@ class ReformerEncoder(FairseqEncoder):
         """
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(src_tokens)
-        if self.embed_positions is not None and not self.layer_pos_embed:
+        if self.embed_positions is not None:
             x += self.embed_positions(src_tokens)
         if self.src_embed is not None:
             x += self.src_embed.unsqueeze(0) * self.embed_scale
@@ -295,8 +292,6 @@ class ReformerEncoder(FairseqEncoder):
 
         # encoder layers
         for layer in self.layers:
-            if self.layer_pos_embed:
-                x += self.embed_positions(src_tokens).transpose(0, 1)
             x = layer(x, encoder_padding_mask)
 
         if self.normalize:
@@ -305,7 +300,6 @@ class ReformerEncoder(FairseqEncoder):
         return {
             'encoder_out': x,  # T x B x C
             'encoder_padding_mask': encoder_padding_mask,  # B x T
-            'layer_pos_embed': self.embed_positions(src_tokens) if self.layer_pos_embed else None,  # B x T x C
         }
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -325,9 +319,6 @@ class ReformerEncoder(FairseqEncoder):
         if encoder_out['encoder_padding_mask'] is not None:
             encoder_out['encoder_padding_mask'] = \
                 encoder_out['encoder_padding_mask'].index_select(0, new_order)
-        if encoder_out['layer_pos_embed'] is not None:
-            encoder_out['layer_pos_embed'] = \
-                encoder_out['layer_pos_embed'].index_select(0, new_order)
         return encoder_out
 
     def max_positions(self):
@@ -354,7 +345,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         super().__init__(dictionary)
         self.dropout = args.dropout
         self.share_input_output_embed = args.share_decoder_input_output_embed
-        self.layer_pos_embed = args.layer_pos_embed
 
         input_embed_dim = embed_tokens.embedding_dim
         embed_dim = args.decoder_embed_dim
@@ -447,7 +437,7 @@ class ReformerDecoder(FairseqIncrementalDecoder):
         if self.project_in_dim is not None:
             x = self.project_in_dim(x)
 
-        if positions is not None and not self.layer_pos_embed:
+        if positions is not None:
             x += positions
         if self.tgt_embed is not None:
             x += self.tgt_embed.unsqueeze(0) * self.embed_scale
@@ -466,12 +456,6 @@ class ReformerDecoder(FairseqIncrementalDecoder):
 
         # decoder layers
         for layer in self.layers:
-            if self.layer_pos_embed:
-                tgt_pos_embed = positions.transpose(0, 1)
-                src_pos_embed = encoder_out['layer_pos_embed'].transpose(0, 1)
-                joint_pos_embed = (src_pos_embed.unsqueeze(0).repeat(tgt_pos_embed.size(0), 1, 1, 1) +
-                                   tgt_pos_embed.unsqueeze(1).repeat(1, src_pos_embed.size(0), 1, 1))
-                x += joint_pos_embed.to(x.device)
             x, attn = layer(
                 x,
                 encoder_out['encoder_padding_mask'] if encoder_out is not None else None,
@@ -850,7 +834,6 @@ def base_architecture(args):
 
     args.src_tgt_embed = getattr(args, 'src_tgt_embed', False)
     args.layer_chain = getattr(args, 'layer_chain', 'attn1d:dec+ffn2d:dec+attn1d:enc+ffn2d:enc')
-    args.layer_pos_embed = getattr(args, 'layer_pos_embed', False)
     args.memory_efficient = getattr(args, 'memory_efficient', False)
 
 
