@@ -806,12 +806,16 @@ def PositionalEmbedding(num_embeddings, embedding_dim, padding_idx, left_pad, le
 def base_architecture(args):
     args.encoder_embed_path = getattr(args, 'encoder_embed_path', None)
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 512)
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 2048)
+    args.encoder_layers = getattr(args, 'encoder_layers', 5)
+    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 8)
+    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', False)
     args.encoder_learned_pos = getattr(args, 'encoder_learned_pos', False)
     args.decoder_embed_path = getattr(args, 'decoder_embed_path', None)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', args.encoder_embed_dim)
-    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 2048)
-    args.decoder_layers = getattr(args, 'decoder_layers', 7)
-    args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 8)
+    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', args.encoder_ffn_embed_dim)
+    args.decoder_layers = getattr(args, 'decoder_layers', 5)
+    args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', args.encoder_attention_heads)
     args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', False)
     args.decoder_learned_pos = getattr(args, 'decoder_learned_pos', False)
     args.attention_dropout = getattr(args, 'attention_dropout', 0.)
@@ -837,28 +841,34 @@ def base_architecture(args):
     args.memory_efficient = getattr(args, 'memory_efficient', False)
 
 
-@register_model_architecture('reformer', 'reformer_iwslt_de_en')
-def reformer_iwslt_de_en(args):
-    args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 256)
-    args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', 256)
-    args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', 1024)
-    args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', 4)
+@register_model_architecture('reformer', 'reformer_iwslt_de_en_v1')
+def reformer_iwslt_de_en_v1(args):
     args.dropout = getattr(args, 'dropout', 0.3)
+    args.encoder_layers = getattr(args, 'encoder_layers', 0)
+    args.decoder_layers = getattr(args, 'decoder_layers', 7)
+    args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 256)
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1024)
+    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 4)
     args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
     base_architecture(args)
 
 
-@register_model_architecture('reformer', 'reformer_nist_zh_en')
-def reformer_nist_zh_en(args):
-    args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
-    args.relu_dropout = getattr(args, 'relu_dropout', 0.1)
+@register_model_architecture('reformer', 'reformer_iwslt_de_en_v2')
+def reformer_iwslt_de_en_v2(args):
+    args.dropout = getattr(args, 'dropout', 0.3)
+    args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 256)
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1024)
+    args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 4)
+    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', True)
     args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
     base_architecture(args)
 
 
-@register_model_architecture('reformer', 'reformer_wmt_en_de')
-def reformer_wmt_en_de(args):
+@register_model_architecture('reformer', 'reformer_nist_zh_en_v2')
+def reformer_nist_zh_en_v2(args):
+    args.dropout = getattr(args, 'dropout', 0.3)
     args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
     args.relu_dropout = getattr(args, 'relu_dropout', 0.1)
+    args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', True)
     args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
     base_architecture(args)
