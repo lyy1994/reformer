@@ -11,6 +11,9 @@ from torch.nn import Parameter
 import torch.nn.functional as F
 
 from fairseq import utils
+from fairseq.modules import (
+    Dropout1d,
+)
 
 
 class SeparableAttention(nn.Module):
@@ -22,7 +25,6 @@ class SeparableAttention(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.dropout = dropout
         self.head_dim = embed_dim // num_heads
         assert self.head_dim * num_heads == self.embed_dim, "embed_dim must be divisible by num_heads"
         self.scaling = self.head_dim ** -0.5
@@ -43,6 +45,8 @@ class SeparableAttention(nn.Module):
         self.add_zero_attn = add_zero_attn
 
         self.tgt_attn = tgt_attn
+
+        self.dropout1d = Dropout1d(p=dropout, dim=0)
 
         self.reset_parameters()
 
@@ -178,7 +182,9 @@ class SeparableAttention(nn.Module):
             attn_weights = attn_weights.view(src_size * true_bsz * self.num_heads, out_len, in_len)
 
         attn_weights = F.softmax(attn_weights.float(), dim=-1).type_as(attn_weights)
-        attn_weights = F.dropout(attn_weights, p=self.dropout, training=self.training)
+        attn_weights = attn_weights.view(src_size, true_bsz, self.num_heads, out_len, in_len)
+        attn_weights = self.dropout1d(attn_weights)
+        attn_weights = attn_weights.view(bsz * self.num_heads, out_len, in_len)
 
         attn = torch.bmm(attn_weights, v)
         assert list(attn.size()) == [bsz * self.num_heads, out_len, self.head_dim]
