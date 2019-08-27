@@ -513,9 +513,10 @@ class ReformerInputLayer(nn.Module):
         super().__init__()
         # TODO: more ways to form 2D representation
         self.input_layer = args.decoder_input_layer
+        self.scaling = 0.5 if args.arch.startswith('reformer_v1') else 1.
 
     def extra_repr(self):
-        return 'input_layer={}'.format(self.input_layer)
+        return 'input_layer={}, scaling={}'.format(self.input_layer, self.scaling)
 
     def forward(self, src_embed, tgt_embed):
         x = None
@@ -529,7 +530,7 @@ class ReformerInputLayer(nn.Module):
             assert src_embed.size(-1) == tgt_embed.size(-1), \
                 f'source embedding dim ({src_embed.size(-1)}) must match target embedding dim({tgt_embed.size(-1)}) ' \
                 f'when using input layer {self.input_layer}'
-            x = src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1) + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1)
+            x = src_embed.unsqueeze(0).repeat(tgt_len, 1, 1, 1) + tgt_embed.unsqueeze(1).repeat(1, src_len, 1, 1) * self.scaling
         return x
 
 
