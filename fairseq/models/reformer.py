@@ -117,7 +117,7 @@ class ReformerModel(FairseqModel):
         parser.add_argument('--layer-chain', type=str, metavar='STR',
                             help='specify the instruction of layers')
         parser.add_argument('--memory-efficient', default=False, action='store_true',
-                            help='checkpoint all attentions, 30% slower')
+                            help='checkpoint all attentions, ~25% slower, ~38% less memory')
 
     @classmethod
     def build_model(cls, args, task):
@@ -841,8 +841,8 @@ def base_architecture(args):
     args.memory_efficient = getattr(args, 'memory_efficient', False)
 
 
-@register_model_architecture('reformer', 'reformer_iwslt_de_en_v1')
-def reformer_iwslt_de_en_v1(args):
+@register_model_architecture('reformer', 'reformer_v1_iwslt_de_en')
+def reformer_v1_iwslt_de_en(args):
     args.dropout = getattr(args, 'dropout', 0.3)
     args.encoder_layers = getattr(args, 'encoder_layers', 0)
     args.decoder_layers = getattr(args, 'decoder_layers', 7)
@@ -853,8 +853,8 @@ def reformer_iwslt_de_en_v1(args):
     base_architecture(args)
 
 
-@register_model_architecture('reformer', 'reformer_iwslt_de_en_v2')
-def reformer_iwslt_de_en_v2(args):
+@register_model_architecture('reformer', 'reformer_v2_iwslt_de_en')
+def reformer_v2_iwslt_de_en(args):
     args.dropout = getattr(args, 'dropout', 0.3)
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 256)
     args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1024)
@@ -864,9 +864,16 @@ def reformer_iwslt_de_en_v2(args):
     base_architecture(args)
 
 
-@register_model_architecture('reformer', 'reformer_nist_zh_en_v2')
-def reformer_nist_zh_en_v2(args):
-    args.dropout = getattr(args, 'dropout', 0.3)
+@register_model_architecture('reformer', 'reformer_v2_scaled_iwslt_de_en')
+def reformer_v2_scaled_iwslt_de_en(args):
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1536)
+    args.encoder_layers = getattr(args, 'encoder_layers', 7)
+    reformer_v2_iwslt_de_en(args)
+
+
+@register_model_architecture('reformer', 'reformer_v2_nist_zh_en')
+def reformer_v2_nist_zh_en(args):
+    args.dropout = getattr(args, 'dropout', 0.1)
     args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
     args.relu_dropout = getattr(args, 'relu_dropout', 0.1)
     args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', True)
