@@ -10,10 +10,6 @@ from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
 
-from fairseq.modules import (
-    SeparableAttention,
-)
-
 _VALID_REDUCTION = {}
 
 
