@@ -20,8 +20,11 @@ lenpen=${11}
 
 record=${12}
 
+score_reference=${13}
+
 log_file=${model_dir}/${ckpt%%.pt}/log_${s}_${t}_${subset}_beam${beam_size}_lenpen${lenpen}
 output_file=${model_dir}/${ckpt%%.pt}/hypo_${s}_${t}_${subset}_beam${beam_size}_lenpen${lenpen}
+same_file=${model_dir}/${ckpt%%.pt}/same_${s}_${t}_${subset}_beam${beam_size}_lenpen${lenpen}
 
 cmd="python3 -u ../generate.py
 $data_root_dir/$dataset
@@ -32,9 +35,15 @@ $data_root_dir/$dataset
 --beam $beam_size
 --lenpen $lenpen
 --output-file $output_file
+--same-file $same_file
 --quiet
---remove-bpe
 --model-parallelism-world-size $worker_gpus"
+
+if [[ ${score_reference} -eq 1 ]]; then
+  cmd=${cmd}" --score-reference"
+else
+  cmd=${cmd}" --remove-bpe"
+fi
 
 CUDA_VISIBLE_DEVICES=${devices} PYTHONPATH=`pwd` ${cmd} | tee ${log_file}
 
