@@ -81,7 +81,7 @@ def main(args):
     # Initialize generator
     gen_timer = StopwatchMeter()
     if args.score_reference:
-        translator = SequenceScorer(models, task.target_dictionary)
+        translator = SequenceScorer(models, task.target_dictionary, args.top_k)
     else:
         translator = SequenceGenerator(
             models, task.target_dictionary, beam_size=args.beam, minlen=args.min_len,
@@ -99,6 +99,7 @@ def main(args):
     num_sentences = 0
     has_target = True
     hypos_dict = {}
+    same_dict = {}
     with progress_bar.build_progress_bar(args, itr) as t:
         if args.score_reference:
             translations = translator.score_batched_itr(t, cuda=use_cuda, timer=gen_timer)
@@ -169,6 +170,10 @@ def main(args):
                 else:
                     hypos_dict[sample_id] = [hypo_str]
 
+                # Save the 0-1 string to the dictionary
+                same_str = ' '.join([str(e) for e in hypo['same'].int().tolist()])
+                same_dict[sample_id] = same_str
+
             wps_meter.update(src_tokens.size(0))
             t.log({'wps': round(wps_meter.avg)})
             num_sentences += 1
@@ -179,6 +184,12 @@ def main(args):
             for key in sorted(hypos_dict.keys()):
                 for value in hypos_dict[key]:
                     f.write(value + '\n')
+
+    # Save the 0-1 strings to the file
+    if args.same_file is not None:
+        with open(args.same_file, 'w', encoding='utf-8') as f:
+            for key in sorted(same_dict.keys()):
+                f.write(same_dict[key] + '\n')
 
     print('| Translated {} sentences ({} tokens) in {:.1f}s ({:.2f} sentences/s, {:.2f} tokens/s)'.format(
         num_sentences, gen_timer.n, gen_timer.sum, num_sentences / gen_timer.sum, 1. / gen_timer.avg))

@@ -344,6 +344,11 @@ def add_generation_args(parser):
                        help='if set, uses attention feedback to compute and print alignment to source tokens')
     group.add_argument('--model-overrides', default="{}", type=str, metavar='DICT',
                        help='a dictionary used to override model args at generation that were used during model training')
+
+    group.add_argument('--top-k', default=1, type=int, metavar='N',
+                       help='1 if the target in the top-k predictions during scoring references and 0 otherwise')
+    group.add_argument('--same-file', default=None, type=str, metavar='FILE',
+                       help='file name to store 0-1 strings')
     return group
 
 
