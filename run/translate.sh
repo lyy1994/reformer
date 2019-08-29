@@ -21,6 +21,7 @@ lenpen=${11}
 record=${12}
 
 score_reference=${13}
+top_k=${14}
 
 log_file=${model_dir}/${ckpt%%.pt}/log_${s}_${t}_${subset}_beam${beam_size}_lenpen${lenpen}
 output_file=${model_dir}/${ckpt%%.pt}/hypo_${s}_${t}_${subset}_beam${beam_size}_lenpen${lenpen}
@@ -40,7 +41,7 @@ $data_root_dir/$dataset
 --model-parallelism-world-size $worker_gpus"
 
 if [[ ${score_reference} -eq 1 ]]; then
-  cmd=${cmd}" --score-reference"
+  cmd=${cmd}" --score-reference --top-k $top_k"
 else
   cmd=${cmd}" --remove-bpe"
 fi

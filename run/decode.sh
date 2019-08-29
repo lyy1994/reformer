@@ -16,6 +16,7 @@ beam_size=5
 lenpen=1
 ensemble=
 score_reference=0
+top_k=1
 
 is_eval=1
 tool_path=../../toolkit
@@ -57,7 +58,7 @@ echo -e "\033[34m| src=${s} tgt=${t} ckpt=${ckpt} beam=${beam_size} lenpen=${len
 for subset in ${subsets[@]}
 do
   echo -e "\033[34m| dev=${devices} subset=${subset}\033[0m"
-  sh translate.sh ${devices} ${s} ${t} ${data_root_dir} ${dataset} ${subset} ${model_dir} ${ckpt} ${batch_size} ${beam_size} ${lenpen} ${translate_record} ${score_reference}
+  sh translate.sh ${devices} ${s} ${t} ${data_root_dir} ${dataset} ${subset} ${model_dir} ${ckpt} ${batch_size} ${beam_size} ${lenpen} ${translate_record} ${score_reference} ${top_k}
   wait
   if [[ ${is_eval} -eq 1 ]]; then
     sh eval.sh ${tool_path} ${s} ${t} ${data_root_dir} ${dataset} ${subset} ${model_dir} ${ckpt} ${batch_size} ${beam_size} ${lenpen} ${eval_record}
