@@ -171,8 +171,9 @@ def main(args):
                     hypos_dict[sample_id] = [hypo_str]
 
                 # Save the 0-1 string to the dictionary
-                same_str = ' '.join([str(e) for e in hypo['same'].int().tolist()])
-                same_dict[sample_id] = same_str
+                if isinstance(translator, SequenceScorer):
+                    same_str = ' '.join([str(e) for e in hypo['same'].int().tolist()])
+                    same_dict[sample_id] = same_str
 
             wps_meter.update(src_tokens.size(0))
             t.log({'wps': round(wps_meter.avg)})
@@ -186,7 +187,7 @@ def main(args):
                     f.write(value + '\n')
 
     # Save the 0-1 strings to the file
-    if args.same_file is not None:
+    if args.same_file is not None and isinstance(translator, SequenceScorer):
         with open(args.same_file, 'w', encoding='utf-8') as f:
             for key in sorted(same_dict.keys()):
                 f.write(same_dict[key] + '\n')
