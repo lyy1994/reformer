@@ -15,7 +15,7 @@ dataset=iwslt14.tokenized.de-en
 
 ######## parameters ########
 # which hparams 
-param=reformer_v2_iwslt_de_en
+param=reformer_fast_iwslt_de_en
 # defualt is 103k. About 10 epochs for 700w CWMT
 max_epoch=45
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
@@ -23,7 +23,7 @@ other_hparams=
 
 ######## required ########
 # tag is the name of your experiments
-tag=iwslt_deen_reformer_v2
+tag=iwslt_deen_reformer_fast
 # whether to continue training if experiment is already existed
 is_continue=1
 
@@ -52,7 +52,6 @@ $data_dir/$dataset
 
 --distributed-world-size 1
 --model-parallelism-world-size $worker_gpus
---debug
 
 --no-progress-bar
 --log-interval 100

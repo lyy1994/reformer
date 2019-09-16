@@ -815,10 +815,10 @@ def base_architecture(args):
     args.decoder_embed_path = getattr(args, 'decoder_embed_path', None)
     args.decoder_embed_dim = getattr(args, 'decoder_embed_dim', args.encoder_embed_dim)
     args.decoder_ffn_embed_dim = getattr(args, 'decoder_ffn_embed_dim', args.encoder_ffn_embed_dim)
-    args.decoder_layers = getattr(args, 'decoder_layers', 5)
+    args.decoder_layers = getattr(args, 'decoder_layers', args.encoder_layers)
     args.decoder_attention_heads = getattr(args, 'decoder_attention_heads', args.encoder_attention_heads)
-    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', False)
-    args.decoder_learned_pos = getattr(args, 'decoder_learned_pos', False)
+    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', args.encoder_normalize_before)
+    args.decoder_learned_pos = getattr(args, 'decoder_learned_pos', args.encoder_learned_pos)
     args.attention_dropout = getattr(args, 'attention_dropout', 0.)
     args.relu_dropout = getattr(args, 'relu_dropout', 0.)
     args.dropout = getattr(args, 'dropout', 0.1)
@@ -842,8 +842,8 @@ def base_architecture(args):
     args.memory_efficient = getattr(args, 'memory_efficient', False)
 
 
-@register_model_architecture('reformer', 'reformer_v1_iwslt_de_en')
-def reformer_v1_iwslt_de_en(args):
+@register_model_architecture('reformer', 'reformer_base_iwslt_de_en')
+def reformer_base_iwslt_de_en(args):
     args.dropout = getattr(args, 'dropout', 0.3)
     args.encoder_layers = getattr(args, 'encoder_layers', 0)
     args.decoder_layers = getattr(args, 'decoder_layers', 7)
@@ -854,29 +854,46 @@ def reformer_v1_iwslt_de_en(args):
     base_architecture(args)
 
 
-@register_model_architecture('reformer', 'reformer_v2_iwslt_de_en')
-def reformer_v2_iwslt_de_en(args):
+@register_model_architecture('reformer', 'reformer_fast_iwslt_de_en')
+def reformer_fast_iwslt_de_en(args):
     args.dropout = getattr(args, 'dropout', 0.3)
     args.encoder_embed_dim = getattr(args, 'encoder_embed_dim', 256)
     args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1024)
     args.encoder_attention_heads = getattr(args, 'encoder_attention_heads', 4)
     args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', True)
+    base_architecture(args)
+
+
+@register_model_architecture('reformer', 'reformer_fast_iwslt_de_en_scaling')
+def reformer_fast_iwslt_de_en_scaling(args):
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1536)
+    args.encoder_layers = getattr(args, 'encoder_layers', 7)
+    reformer_fast_iwslt_de_en(args)
+
+
+@register_model_architecture('reformer', 'reformer_base_nist_zh_en')
+def reformer_base_nist_zh_en(args):
+    args.dropout = getattr(args, 'dropout', 0.1)
+    args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
+    args.relu_dropout = getattr(args, 'relu_dropout', 0.1)
+    args.encoder_layers = getattr(args, 'encoder_layers', 0)
+    args.decoder_layers = getattr(args, 'decoder_layers', 7)
     args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
     base_architecture(args)
 
 
-@register_model_architecture('reformer', 'reformer_v2_scaled_iwslt_de_en')
-def reformer_v2_scaled_iwslt_de_en(args):
-    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 1536)
-    args.encoder_layers = getattr(args, 'encoder_layers', 7)
-    reformer_v2_iwslt_de_en(args)
-
-
-@register_model_architecture('reformer', 'reformer_v2_nist_zh_en')
-def reformer_v2_nist_zh_en(args):
+@register_model_architecture('reformer', 'reformer_fast_nist_zh_en')
+def reformer_fast_nist_zh_en(args):
     args.dropout = getattr(args, 'dropout', 0.1)
     args.attention_dropout = getattr(args, 'attention_dropout', 0.1)
     args.relu_dropout = getattr(args, 'relu_dropout', 0.1)
     args.encoder_normalize_before = getattr(args, 'encoder_normalize_before', True)
-    args.decoder_normalize_before = getattr(args, 'decoder_normalize_before', True)
     base_architecture(args)
+
+
+@register_model_architecture('reformer', 'reformer_fast_nist_zh_en_scaling')
+def reformer_fast_nist_zh_en_scaling(args):
+    args.dropout = getattr(args, 'dropout', 0.2)
+    args.encoder_ffn_embed_dim = getattr(args, 'encoder_ffn_embed_dim', 3072)
+    args.encoder_layers = getattr(args, 'encoder_layers', 7)
+    reformer_fast_nist_zh_en(args)
