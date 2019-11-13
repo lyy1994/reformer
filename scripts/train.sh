@@ -3,7 +3,7 @@ set -e
 
 ######## hardware ########
 # devices
-devices=0,1
+devices=0
 worker_gpus=`echo "$devices" | awk '{n=split($0,arr,",");print n}'`
 
 ######## dataset ########
@@ -16,7 +16,7 @@ dataset=iwslt14.tokenized.de-en
 ######## parameters ########
 # which hparams 
 param=reformer_fast_iwslt_de_en
-# defualt is 103k. About 10 epochs for 700w CWMT
+# number of epochs
 max_epoch=45
 # dynamic hparams, e.g. change the batch size without the register in code, other_hparams='batch_size=2048'
 other_hparams=
@@ -49,6 +49,8 @@ $data_dir/$dataset
 -a $param
 -s $s
 -t $t
+
+--fp16
 
 --distributed-world-size 1
 --model-parallelism-world-size $worker_gpus
