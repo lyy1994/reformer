@@ -1,9 +1,17 @@
-# Introduction
+# Reformer
 
-This project intends to build a Seq2Seq model consisted of only decoder without distinguishing source and target from the architecture design, dubbed **Reformer**.
+PyTorch original implementation of **Neural Machine Translation with Joint Representation**. It is modified from [fairseq-0.6.0](https://github.com/pytorch/fairseq).
 
-# Results
-[Online Table](https://shimo.im/sheet/vJf7CYUYlEIWd6fw/e7EN6)
+## Requirements
 
-# Paper
-[AAAI-2020](https://github.com/lyy1994/reformer-paper)
+- PyTorch version == 1.1.0
+- Python version == 3.6.7
+
+## Citation
+
+    @inproceedings{li2020aaai,
+      title = {Neural Machine Translation with Joint Representation},
+      author = {Yanyang Li and Qiang Wang and Tong Xiao and Tongran Liu and Jingbo Zhu},
+      booktitle = {Proceedings of the Thirty-Fourth AAAI Conference on Artificial Intelligence},
+      year = {2020},
+    }
