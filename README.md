@@ -1,6 +1,6 @@
 # Reformer
 
-PyTorch original implementation of **Neural Machine Translation with Joint Representation**. It is modified from [fairseq-0.6.0](https://github.com/pytorch/fairseq).
+PyTorch original implementation of [Neural Machine Translation with Joint Representation](https://arxiv.org/abs/2002.06546). It is modified from [fairseq-0.6.0](https://github.com/pytorch/fairseq).
 
 ## Requirements
 
